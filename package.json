@@ -1,0 +1,13 @@
+{
+  "name": "archery",
+  "version": "2.0.0",
+  "description": "Mission College Archery score log web app (Supabase backend)",
+  "scripts": {
+    "dev": "npx -y serve . -l 3000",
+    "start": "npx -y serve . -l 3000"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "private": true
+}
