@@ -49,7 +49,7 @@ app.addEventListener('input', onInput);
   } catch (err) {
     console.error('Boot error:', err);
   }
-  render();
+  await renderAsync();
 })();
 
 // ── Data loaders ──────────────────────────────────────
