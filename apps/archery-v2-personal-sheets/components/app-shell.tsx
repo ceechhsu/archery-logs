@@ -113,6 +113,11 @@ export function AppShell() {
     }
     return totals;
   }, [activeSession]);
+  const selectedHistorySession = useMemo(() => {
+    if (!sessions.length) return null;
+    if (!activeSessionId) return sessions[0];
+    return sessions.find((session) => session.sessionId === activeSessionId) || sessions[0];
+  }, [activeSessionId, sessions]);
 
   async function handlePhotoUpload(endId: string, file: File) {
     if (!meta || !activeSession) return;
@@ -154,6 +159,7 @@ export function AppShell() {
         const lng = position.coords.longitude;
         let resolvedLocation = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
         let usedAddress = false;
+        let geocodeFailure: string | null = null;
 
         try {
           const geocoded = await reverseGeocode(lat, lng);
@@ -161,7 +167,8 @@ export function AppShell() {
             resolvedLocation = geocoded.formattedAddress;
             usedAddress = true;
           }
-        } catch {
+        } catch (error) {
+          geocodeFailure = error instanceof Error ? error.message : "Unable to resolve nearest address";
           // Keep coordinate fallback if reverse geocode fails.
         }
 
@@ -175,7 +182,12 @@ export function AppShell() {
         setLocationNotice(
           usedAddress
             ? { type: "info", text: "Location auto-filled from nearest address." }
-            : { type: "warn", text: "Could not resolve nearest address. Saved coordinates instead." }
+            : {
+                type: "warn",
+                text: `Could not resolve nearest address. Saved coordinates instead.${
+                  geocodeFailure ? ` (${geocodeFailure})` : ""
+                }`
+              }
         );
 
         setIsLocating(false);
@@ -522,23 +534,59 @@ export function AppShell() {
           <div className="history-list">
             {sessions.map((session) => (
               <article key={session.sessionId} className={`history-item ${activeSessionId === session.sessionId ? "active" : ""}`}>
-                <button
-                  onClick={() => {
-                    setActiveSessionId(session.sessionId);
-                    setTab("editor");
-                  }}
-                >
+                <button onClick={() => setActiveSessionId(session.sessionId)}>
                   <strong>{session.sessionDate}</strong>
                   <span>{session.ends.length} ends</span>
                   <span>{sessionArrows(session)} arrows</span>
                   <span>{sessionTotal(session)} pts</span>
                 </button>
-                <button className="danger-link" onClick={() => deleteSession(session.sessionId)}>
-                  Delete
-                </button>
+                <div className="history-item-actions">
+                  <button
+                    className="icon-action"
+                    title={`Edit ${session.sessionDate}`}
+                    aria-label={`Edit ${session.sessionDate}`}
+                    onClick={() => {
+                      setActiveSessionId(session.sessionId);
+                      setTab("editor");
+                    }}
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                      <path d="M16.8 3.5a2.4 2.4 0 0 1 3.4 3.4l-9.6 9.6-4.4 1 1-4.4 9.6-9.6Zm-8 10.3-.4 1.8 1.8-.4 8.7-8.7-1.4-1.4-8.7 8.7Z" />
+                    </svg>
+                  </button>
+                  <button className="danger-link" onClick={() => deleteSession(session.sessionId)}>
+                    Delete
+                  </button>
+                </div>
               </article>
             ))}
           </div>
+          {selectedHistorySession ? (
+            <article className="history-detail-card">
+              <div className="panel-head">
+                <h3>{selectedHistorySession.sessionDate} (Read Only)</h3>
+                <span>{selectedHistorySession.location || "No location"}</span>
+              </div>
+              <p className="helper-text">{selectedHistorySession.notes || "No notes for this session."}</p>
+              <div className="history-ends-readonly">
+                {selectedHistorySession.ends.map((end) => (
+                  <div key={end.endId} className="history-end-row">
+                    <span>End {end.endIndex}</span>
+                    <span>{end.distanceMeters}m</span>
+                    <span>{end.shots.map((shot) => shot.value).join(" ")}</span>
+                    <strong>{end.shots.reduce((sum, shot) => sum + shot.score, 0)}</strong>
+                    {end.photoWebViewLink ? (
+                      <a className="tiny-link" href={end.photoWebViewLink} target="_blank" rel="noreferrer">
+                        View Photo
+                      </a>
+                    ) : (
+                      <span className="tiny-link muted">No Photo</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </article>
+          ) : null}
         </section>
       ) : null}
 
