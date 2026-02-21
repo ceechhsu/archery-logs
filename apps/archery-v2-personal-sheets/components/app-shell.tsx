@@ -20,13 +20,42 @@ function StatCard({ label, value }: { label: string; value: string }) {
 
 function addEnd(session: Session): Session {
   const nextIndex = session.ends.length + 1;
+  const sessionShotsCount = session.ends[0]?.shots.length || 5;
   const newEnd: End = {
     endId: crypto.randomUUID(),
     endIndex: nextIndex,
     distanceMeters: 18,
-    shots: Array.from({ length: 5 }, (_, i) => ({ shotId: crypto.randomUUID(), shotIndex: i + 1, score: 0, value: "M" }))
+    shots: Array.from({ length: sessionShotsCount }, (_, i) => ({
+      shotId: crypto.randomUUID(),
+      shotIndex: i + 1,
+      score: 0,
+      value: "M"
+    }))
   };
   return { ...session, ends: [...session.ends, newEnd] };
+}
+
+function applySessionShotsCount(session: Session, shotsCount: number): Session {
+  return {
+    ...session,
+    ends: session.ends.map((end) => {
+      const current = end.shots;
+      if (current.length === shotsCount) {
+        return end;
+      }
+
+      if (current.length > shotsCount) {
+        const trimmed = current.slice(0, shotsCount).map((shot, index) => ({ ...shot, shotIndex: index + 1 }));
+        return { ...end, shots: trimmed };
+      }
+
+      const padded = [...current];
+      for (let i = current.length; i < shotsCount; i += 1) {
+        padded.push({ shotId: crypto.randomUUID(), shotIndex: i + 1, score: 0, value: "M" });
+      }
+      return { ...end, shots: padded };
+    })
+  };
 }
 
 function removeEnd(session: Session, endId: string): Session {
@@ -59,8 +88,13 @@ export function AppShell() {
   const [tab, setTab] = useState<Tab>("editor");
   const [uploadingEndId, setUploadingEndId] = useState<string | null>(null);
   const [isLocating, setIsLocating] = useState(false);
+  const [locationNotice, setLocationNotice] = useState<{ type: "info" | "warn" | "error"; text: string } | null>(null);
 
   const stats = useMemo(() => lifetimeStats(sessions), [sessions]);
+  const sessionShotsCount = useMemo(() => {
+    if (!activeSession) return 5;
+    return activeSession.ends[0]?.shots.length || 5;
+  }, [activeSession]);
   const maxShots = useMemo(() => {
     if (!activeSession) return 5;
     return Math.max(5, ...activeSession.ends.map((end) => end.shots.length));
@@ -108,21 +142,24 @@ export function AppShell() {
 
   async function handleUseCurrentLocation() {
     if (!navigator.geolocation) {
-      console.error("Geolocation is not supported by this browser.");
+      setLocationNotice({ type: "error", text: "Geolocation is not supported by this browser." });
       return;
     }
 
     setIsLocating(true);
+    setLocationNotice(null);
     navigator.geolocation.getCurrentPosition(
       async (position) => {
         const lat = position.coords.latitude;
         const lng = position.coords.longitude;
         let resolvedLocation = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+        let usedAddress = false;
 
         try {
           const geocoded = await reverseGeocode(lat, lng);
           if (geocoded.formattedAddress) {
             resolvedLocation = geocoded.formattedAddress;
+            usedAddress = true;
           }
         } catch {
           // Keep coordinate fallback if reverse geocode fails.
@@ -135,10 +172,16 @@ export function AppShell() {
           locationLng: lng
         }));
 
+        setLocationNotice(
+          usedAddress
+            ? { type: "info", text: "Location auto-filled from nearest address." }
+            : { type: "warn", text: "Could not resolve nearest address. Saved coordinates instead." }
+        );
+
         setIsLocating(false);
       },
       (error) => {
-        console.error(error.message);
+        setLocationNotice({ type: "error", text: `Location request failed: ${error.message}` });
         setIsLocating(false);
       },
       {
@@ -258,6 +301,7 @@ export function AppShell() {
                     locationLng: null
                   }))
                 }
+                onInput={() => setLocationNotice(null)}
                 placeholder="Address or range name"
               />
               <button className="button" onClick={() => void handleUseCurrentLocation()} disabled={isLocating}>
@@ -281,6 +325,9 @@ export function AppShell() {
                 Open in Google Maps
               </a>
             </div>
+            {locationNotice ? (
+              <p className={`location-notice ${locationNotice.type}`}>{locationNotice.text}</p>
+            ) : null}
           </label>
 
           <label className="field-label">
@@ -296,9 +343,30 @@ export function AppShell() {
             <div className="score-table-wrap" style={scoreTableStyle}>
               <div className="ends-toolbar">
                 <p>Ends: {activeSession.ends.length}</p>
-                <button className="button" onClick={() => updateSession((session) => addEnd(session))}>
-                  + Add End
-                </button>
+                <div className="shots-per-session-control" aria-label="Shots per end for this session">
+                  <span>Shots/End</span>
+                  <button
+                    className="icon-button"
+                    disabled={sessionShotsCount <= 3}
+                    title={sessionShotsCount <= 3 ? "Minimum 3 shots per end" : "Decrease shots per end"}
+                    onClick={() =>
+                      updateSession((session) => applySessionShotsCount(session, Math.max(3, sessionShotsCount - 1)))
+                    }
+                  >
+                    -
+                  </button>
+                  <strong>{sessionShotsCount}</strong>
+                  <button
+                    className="icon-button"
+                    disabled={sessionShotsCount >= 12}
+                    title={sessionShotsCount >= 12 ? "Maximum 12 shots per end" : "Increase shots per end"}
+                    onClick={() =>
+                      updateSession((session) => applySessionShotsCount(session, Math.min(12, sessionShotsCount + 1)))
+                    }
+                  >
+                    +
+                  </button>
+                </div>
               </div>
               <div className="score-table-head">
                 <span>End</span>
@@ -337,56 +405,7 @@ export function AppShell() {
                     }}
                   />
                 </label>
-                <div className="shots-count-control">
-                  <button
-                    className="icon-button"
-                    disabled={end.shots.length >= 12}
-                    title={end.shots.length >= 12 ? "Maximum 12 shots per end" : `Add shot to end ${end.endIndex}`}
-                    onClick={() =>
-                      updateSession((session) => ({
-                        ...session,
-                        ends: session.ends.map((currentEnd) => {
-                          if (currentEnd.endId !== end.endId) return currentEnd;
-                          if (currentEnd.shots.length >= 12) return currentEnd;
-                          const nextIndex = currentEnd.shots.length + 1;
-                          return {
-                            ...currentEnd,
-                            shots: [
-                              ...currentEnd.shots,
-                              { shotId: crypto.randomUUID(), shotIndex: nextIndex, score: 0, value: "M" }
-                            ]
-                          };
-                        })
-                      }))
-                    }
-                    aria-label={`Add shot to end ${end.endIndex}`}
-                  >
-                    +
-                  </button>
-                  <strong>{end.shots.length}</strong>
-                  <button
-                    className="icon-button"
-                    disabled={end.shots.length <= 3}
-                    title={end.shots.length <= 3 ? "Minimum 3 shots per end" : `Remove shot from end ${end.endIndex}`}
-                    onClick={() =>
-                      updateSession((session) => ({
-                        ...session,
-                        ends: session.ends.map((currentEnd) => {
-                          if (currentEnd.endId !== end.endId) return currentEnd;
-                          if (currentEnd.shots.length <= 3) return currentEnd;
-                          const trimmed = currentEnd.shots.slice(0, -1);
-                          return {
-                            ...currentEnd,
-                            shots: trimmed.map((shot, index) => ({ ...shot, shotIndex: index + 1 }))
-                          };
-                        })
-                      }))
-                    }
-                    aria-label={`Remove shot from end ${end.endIndex}`}
-                  >
-                    -
-                  </button>
-                </div>
+                <p className="shots-count-static">{end.shots.length}</p>
                 <div className="shots-grid inline-scores">
                   {end.shots.map((shot) => (
                     <div key={shot.shotId} className="shot-input">
@@ -424,6 +443,7 @@ export function AppShell() {
                   <span>Running Total: <strong>{running}</strong></span>
                 </p>
                 <div className="end-actions">
+                  <span className={`photo-indicator ${end.photoFileId ? "attached" : ""}`} aria-hidden="true" />
                   <input
                     id={`photo-upload-${end.endId}`}
                     className="sr-only"
@@ -447,6 +467,24 @@ export function AppShell() {
                       <path d="M7 6h3l1.4-2h5.2L18 6h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3Zm5 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10Zm0-2.2a2.8 2.8 0 1 1 0-5.6 2.8 2.8 0 0 1 0 5.6Z" />
                     </svg>
                   </label>
+                  <a
+                    className="icon-action"
+                    href={end.photoWebViewLink || "#"}
+                    target="_blank"
+                    rel="noreferrer"
+                    title={end.photoWebViewLink ? "View photo" : "No photo attached"}
+                    aria-label={end.photoWebViewLink ? "View photo" : "No photo attached"}
+                    aria-disabled={!end.photoWebViewLink}
+                    onClick={(event) => {
+                      if (!end.photoWebViewLink) {
+                        event.preventDefault();
+                      }
+                    }}
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                      <path d="M12 5c5.6 0 9.7 4.3 11 6.5-1.3 2.2-5.4 6.5-11 6.5S2.3 13.7 1 11.5C2.3 9.3 6.4 5 12 5Zm0 2c-4.2 0-7.4 2.8-8.8 4.5C4.6 13.2 7.8 16 12 16s7.4-2.8 8.8-4.5C19.4 9.8 16.2 7 12 7Zm0 1.6a2.9 2.9 0 1 1 0 5.8 2.9 2.9 0 0 1 0-5.8Z" />
+                    </svg>
+                  </a>
                   <button
                     className="icon-action danger"
                     disabled={activeSession.ends.length <= 1}
@@ -460,23 +498,20 @@ export function AppShell() {
                       <path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm1 7h2v8h-2v-8Zm4 0h2v8h-2v-8ZM8 10h2v8H8v-8Z" />
                     </svg>
                   </button>
-                  {end.photoWebViewLink ? (
-                    <a className="tiny-link" href={end.photoWebViewLink} target="_blank" rel="noreferrer">
-                      View Photo
-                    </a>
-                  ) : null}
                   {uploadingEndId === end.endId ? <span className="tiny-link">Uploading...</span> : null}
                 </div>
               </article>
                 );
               })}
             </div>
-          </div>
-
-          <div className="stack-row">
-            <button className="button primary" onClick={() => void syncNow()}>
-              Save + Sync
-            </button>
+            <div className="editor-actions">
+              <button className="button" onClick={() => updateSession((session) => addEnd(session))}>
+                + Add End
+              </button>
+              <button className="button primary" onClick={() => void syncNow()}>
+                Save + Sync
+              </button>
+            </div>
           </div>
         </section>
       ) : null}

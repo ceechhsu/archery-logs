@@ -152,6 +152,11 @@ body {
   text-decoration: none;
 }
 
+.icon-action[aria-disabled="true"] {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
 .icon-action svg {
   width: 16px;
   height: 16px;
@@ -283,6 +288,24 @@ body {
   opacity: 0.45;
 }
 
+.location-notice {
+  margin: 0.2rem 0 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.location-notice.info {
+  color: #2a6f4c;
+}
+
+.location-notice.warn {
+  color: #986017;
+}
+
+.location-notice.error {
+  color: #982d26;
+}
+
 textarea,
 input[type="date"],
 input[type="number"] {
@@ -357,6 +380,24 @@ textarea {
   color: var(--ink-1);
   font-size: 0.9rem;
   font-weight: 600;
+}
+
+.shots-per-session-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  background: #fff;
+  padding: 0.3rem 0.45rem;
+}
+
+.shots-per-session-control span {
+  font-size: 0.78rem;
+  color: var(--ink-1);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .score-table-head {
@@ -526,6 +567,12 @@ textarea {
   text-align: center;
 }
 
+.shots-count-static {
+  margin: 0;
+  text-align: center;
+  font-weight: 700;
+}
+
 .mobile-end-summary {
   display: none;
   margin: 0;
@@ -536,18 +583,47 @@ textarea {
   justify-content: center;
   align-items: center;
   gap: 0.35rem;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   min-height: 34px;
+}
+
+.photo-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  border: 1px solid #c8b9a6;
+  background: transparent;
+}
+
+.photo-indicator.attached {
+  border-color: #236340;
+  background: #2a8a58;
 }
 
 .tiny-link {
   font-size: 0.72rem;
   color: var(--ink-1);
   text-decoration: none;
+  min-width: 66px;
 }
 
 .tiny-link:hover {
   text-decoration: underline;
+}
+
+.editor-actions {
+  margin-top: 0.45rem;
+  width: max-content;
+  min-width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.editor-actions .button {
+  min-width: 140px;
+  text-align: center;
 }
 
 .shots-count-control {
@@ -732,6 +808,17 @@ code {
   .ends-toolbar {
     min-width: 0;
     width: 100%;
+    row-gap: 0.45rem;
+  }
+
+  .editor-actions {
+    width: 100%;
+    min-width: 0;
+    flex-wrap: nowrap;
+  }
+
+  .editor-actions .button {
+    min-width: 128px;
   }
 
   .score-table-wrap {
@@ -748,6 +835,13 @@ code {
 
   .end-card h3 {
     grid-column: 1 / span 2;
+  }
+
+  .shots-count-static {
+    grid-column: 1 / span 4;
+    text-align: left;
+    font-size: 0.86rem;
+    color: var(--ink-1);
   }
 
   .distance-field.inline {
