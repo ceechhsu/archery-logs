@@ -10,12 +10,19 @@ export interface Shot {
 export interface End {
   endId: string;
   endIndex: number;
-  distanceMeters: number;
+  distanceMeters: number | null;
   photoFileId?: string | null;
   photoName?: string | null;
   photoUploadedAt?: string | null;
   photoWebViewLink?: string | null;
   shots: Shot[];
+}
+
+export interface SessionPhoto {
+  fileId: string;
+  name: string;
+  webViewLink?: string | null;
+  uploadedAt: string;
 }
 
 export interface Session {
@@ -27,6 +34,8 @@ export interface Session {
   locationLat?: number | null;
   locationLng?: number | null;
   notes: string;
+  isLocalOnly?: boolean;
+  photos?: SessionPhoto[];
   ends: End[];
 }
 

@@ -14,23 +14,21 @@ function tokenToScore(token: string): number {
 interface ShotWheelPickerProps {
   value: string;
   label: string;
+  disabled?: boolean;
+  onOpenAttempt?: () => boolean;
   onChange: (next: { value: string; score: number }) => void;
 }
 
-export function ShotWheelPicker({ value, label, onChange }: ShotWheelPickerProps) {
+export function ShotWheelPicker({ value, label, disabled = false, onOpenAttempt, onChange }: ShotWheelPickerProps) {
   const [open, setOpen] = useState(false);
-  const [draftValue, setDraftValue] = useState(value);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const scrollDebounceRef = useRef<number | null>(null);
+  const currentValue = value || "M";
 
   const currentIndex = useMemo(() => {
-    const idx = SHOT_OPTIONS.indexOf((draftValue || "M") as (typeof SHOT_OPTIONS)[number]);
+    const idx = SHOT_OPTIONS.indexOf(currentValue as (typeof SHOT_OPTIONS)[number]);
     return idx >= 0 ? idx : 0;
-  }, [draftValue]);
-
-  useEffect(() => {
-    setDraftValue(value || "M");
-  }, [value]);
+  }, [currentValue]);
 
   useEffect(() => {
     if (!open || !viewportRef.current) return;
@@ -40,7 +38,6 @@ export function ShotWheelPicker({ value, label, onChange }: ShotWheelPickerProps
   function commitByIndex(index: number) {
     const safeIndex = Math.max(0, Math.min(SHOT_OPTIONS.length - 1, index));
     const nextValue = SHOT_OPTIONS[safeIndex];
-    setDraftValue(nextValue);
     onChange({ value: nextValue, score: tokenToScore(nextValue) });
   }
 
@@ -59,17 +56,26 @@ export function ShotWheelPicker({ value, label, onChange }: ShotWheelPickerProps
 
   return (
     <div>
-      <button className="shot-wheel-trigger" onClick={() => setOpen(true)} aria-haspopup="dialog" aria-label={label}>
-        {draftValue || "M"}
+      <button
+        className="shot-wheel-trigger"
+        onClick={() => {
+          if (onOpenAttempt && !onOpenAttempt()) return;
+          setOpen(true);
+        }}
+        aria-haspopup="dialog"
+        aria-label={label}
+        disabled={disabled}
+      >
+        {currentValue}
       </button>
 
       <label className="sr-only">
         {label}
         <select
-          value={draftValue || "M"}
+          value={currentValue}
+          disabled={disabled}
           onChange={(event) => {
             const nextValue = event.target.value;
-            setDraftValue(nextValue);
             onChange({ value: nextValue, score: tokenToScore(nextValue) });
           }}
         >
@@ -93,7 +99,7 @@ export function ShotWheelPicker({ value, label, onChange }: ShotWheelPickerProps
                 <button
                   key={option}
                   type="button"
-                  className={`wheel-item ${draftValue === option ? "active" : ""}`}
+                  className={`wheel-item ${currentValue === option ? "active" : ""}`}
                   onClick={() => {
                     if (!viewportRef.current) return;
                     viewportRef.current.scrollTo({ top: index * ITEM_HEIGHT, behavior: "smooth" });

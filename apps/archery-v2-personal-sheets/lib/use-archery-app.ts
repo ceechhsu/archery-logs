@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { v4 as uuidv4 } from "uuid";
 import { bootstrapSheet, fetchSession, logout, pullSheet, pushSheet } from "@/lib/client-api";
+import { dateIsoInSf } from "@/lib/date-utils";
 import { enqueueWrite, listWrites, queuePayload, removeWrite } from "@/lib/indexed-queue";
 import { mergeSessionsLww } from "@/lib/session-merge";
 import { AppMeta, AuthSession, End, Session, Shot, SyncState } from "@/lib/types";
@@ -11,7 +12,7 @@ const LOCAL_SESSIONS_KEY = "archery_v2_local_sessions";
 const LOCAL_META_KEY = "archery_v2_local_meta";
 
 function todayIsoDate(): string {
-  return new Date().toISOString().slice(0, 10);
+  return dateIsoInSf();
 }
 
 function makeShot(index: number): Shot {
@@ -32,7 +33,7 @@ function makeEnd(endIndex: number, shotsCount = 5): End {
   return {
     endId: uuidv4(),
     endIndex,
-    distanceMeters: 18,
+    distanceMeters: null,
     shots: Array.from({ length: shotsCount }, (_, i) => makeShot(i + 1))
   };
 }
@@ -48,6 +49,8 @@ function makeSession(date: string): Session {
     locationLat: null,
     locationLng: null,
     notes: "",
+    isLocalOnly: true,
+    photos: [],
     ends: [makeEnd(1)]
   };
 }
@@ -58,9 +61,16 @@ function normalizeSessions(input: Session[]): Session[] {
     location: session.location || "",
     locationLat: typeof session.locationLat === "number" ? session.locationLat : null,
     locationLng: typeof session.locationLng === "number" ? session.locationLng : null,
+    isLocalOnly: Boolean(session.isLocalOnly),
+    photos: (session.photos || []).map((photo) => ({
+      fileId: photo.fileId,
+      name: photo.name,
+      webViewLink: photo.webViewLink || null,
+      uploadedAt: photo.uploadedAt || new Date().toISOString()
+    })),
     ends: session.ends.map((end) => ({
       ...end,
-      distanceMeters: typeof end.distanceMeters === "number" && end.distanceMeters > 0 ? end.distanceMeters : 18,
+      distanceMeters: typeof end.distanceMeters === "number" && end.distanceMeters > 0 ? end.distanceMeters : null,
       photoFileId: end.photoFileId || null,
       photoName: end.photoName || null,
       photoUploadedAt: end.photoUploadedAt || null,
@@ -131,22 +141,30 @@ export function useArcheryApp() {
     saveLocalSessions(normalized);
   }, []);
 
-  const syncNow = useCallback(async () => {
+  const syncNow = useCallback(async (options?: { publishSessionId?: string }) => {
     if (!meta) return;
     setSyncState("Syncing");
     setErrorMessage(null);
 
     try {
       const localSnapshot = normalizeSessions(sessionsRef.current);
-      if (!localSnapshot.length) {
+      const publishSessionId = options?.publishSessionId;
+      const merged = localSnapshot.map((session) => {
+        if (publishSessionId && session.sessionId === publishSessionId) {
+          return { ...session, isLocalOnly: false };
+        }
+        return session;
+      });
+
+      const syncTarget = merged.filter((session) => !session.isLocalOnly);
+      if (!syncTarget.length) {
         setSyncState("Sync failed");
         setErrorMessage("No local session data to sync yet. Create or edit a session first.");
         return;
       }
 
-      const merged = localSnapshot;
       const queueId = uuidv4();
-      await enqueueWrite({ id: queueId, createdAt: new Date().toISOString(), payload: queuePayload(merged) });
+      await enqueueWrite({ id: queueId, createdAt: new Date().toISOString(), payload: queuePayload(syncTarget) });
       const writes = await listWrites();
       for (const write of writes) {
         const syncedAt = await pushSheet(meta.spreadsheetId, write.payload);

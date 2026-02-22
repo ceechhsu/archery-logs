@@ -4,6 +4,6 @@ import { buildGoogleOAuthUrl, setOauthStateCookie } from "@/lib/server/auth";
 
 export async function GET() {
   const state = randomUUID();
-  setOauthStateCookie(state);
+  await setOauthStateCookie(state);
   return NextResponse.redirect(buildGoogleOAuthUrl(state));
 }

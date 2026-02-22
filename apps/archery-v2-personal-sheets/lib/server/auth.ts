@@ -135,7 +135,8 @@ export async function setSessionCookie(payload: SessionToken): Promise<void> {
     .setExpirationTime("7d")
     .sign(key());
 
-  cookies().set(SESSION_COOKIE, token, {
+  const cookieStore = await cookies();
+  cookieStore.set(SESSION_COOKIE, token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
@@ -144,12 +145,14 @@ export async function setSessionCookie(payload: SessionToken): Promise<void> {
   });
 }
 
-export function clearSessionCookie(): void {
-  cookies().set(SESSION_COOKIE, "", { path: "/", maxAge: 0 });
+export async function clearSessionCookie(): Promise<void> {
+  const cookieStore = await cookies();
+  cookieStore.set(SESSION_COOKIE, "", { path: "/", maxAge: 0 });
 }
 
-export function setOauthStateCookie(state: string): void {
-  cookies().set(OAUTH_STATE_COOKIE, state, {
+export async function setOauthStateCookie(state: string): Promise<void> {
+  const cookieStore = await cookies();
+  cookieStore.set(OAUTH_STATE_COOKIE, state, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
@@ -158,16 +161,19 @@ export function setOauthStateCookie(state: string): void {
   });
 }
 
-export function readOauthStateCookie(): string | undefined {
-  return cookies().get(OAUTH_STATE_COOKIE)?.value;
+export async function readOauthStateCookie(): Promise<string | undefined> {
+  const cookieStore = await cookies();
+  return cookieStore.get(OAUTH_STATE_COOKIE)?.value;
 }
 
-export function clearOauthStateCookie(): void {
-  cookies().set(OAUTH_STATE_COOKIE, "", { path: "/", maxAge: 0 });
+export async function clearOauthStateCookie(): Promise<void> {
+  const cookieStore = await cookies();
+  cookieStore.set(OAUTH_STATE_COOKIE, "", { path: "/", maxAge: 0 });
 }
 
 export async function getSessionToken(): Promise<SessionToken | null> {
-  const raw = cookies().get(SESSION_COOKIE)?.value;
+  const cookieStore = await cookies();
+  const raw = cookieStore.get(SESSION_COOKIE)?.value;
   if (!raw) return null;
   try {
     const { payload } = await jwtVerify(raw, key());

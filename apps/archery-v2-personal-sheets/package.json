@@ -6,12 +6,12 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "lint": "eslint .",
+    "typecheck": "next typegen && tsc --noEmit"
   },
   "dependencies": {
     "jose": "^5.9.6",
-    "next": "14.2.33",
+    "next": "^16.1.6",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "uuid": "^11.1.0",
@@ -22,8 +22,8 @@
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@types/uuid": "^10.0.0",
-    "eslint": "^8.57.1",
-    "eslint-config-next": "14.2.33",
+    "eslint": "^9.39.1",
+    "eslint-config-next": "^16.1.6",
     "typescript": "^5.7.3"
   }
 }

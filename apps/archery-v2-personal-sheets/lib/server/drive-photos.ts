@@ -1,4 +1,4 @@
-const PHOTOS_FOLDER_NAME = "Shoot With Ceech Photos";
+const PHOTOS_FOLDER_NAME = "Archery With Ceech Photos";
 const PHOTO_FOLDER_KEY = "archery_photos_folder";
 const PHOTO_FOLDER_VALUE = "v2_personal_sheets";
 

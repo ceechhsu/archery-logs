@@ -1,4 +1,4 @@
-# Shoot With Ceech Setup
+# Archery With Ceech Setup
 
 ## Environment
 

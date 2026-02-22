@@ -1,6 +1,6 @@
 import { Session } from "@/lib/types";
 
-const SHEET_TITLE = "Shoot With Ceech Log";
+const SHEET_TITLE = "Archery With Ceech Log";
 const APP_PROPERTY_KEY = "archery_app";
 const APP_PROPERTY_VALUE = "v2_personal_sheets";
 
@@ -77,8 +77,8 @@ async function writeRange(spreadsheetId: string, range: string, values: string[]
 export async function ensureSchema(spreadsheetId: string, accessToken: string): Promise<void> {
   await writeRange(
     spreadsheetId,
-    "sessions!A1:H1",
-    [["session_id", "session_date", "created_at", "updated_at", "location", "notes", "location_lat", "location_lng"]],
+    "sessions!A1:I1",
+    [["session_id", "session_date", "created_at", "updated_at", "location", "notes", "location_lat", "location_lng", "session_photos_json"]],
     accessToken
   );
   await writeRange(
@@ -124,7 +124,8 @@ export async function pushSessions(spreadsheetId: string, sessions: Session[], a
     s.location || "",
     s.notes,
     s.locationLat == null ? "" : String(s.locationLat),
-    s.locationLng == null ? "" : String(s.locationLng)
+    s.locationLng == null ? "" : String(s.locationLng),
+    JSON.stringify(s.photos || [])
   ]);
   const endRows: string[][] = [];
   const shotRows: string[][] = [];
@@ -137,7 +138,7 @@ export async function pushSessions(spreadsheetId: string, sessions: Session[], a
         session.sessionId,
         String(end.endIndex),
         String(end.shots.length),
-        String(end.distanceMeters),
+        end.distanceMeters == null ? "" : String(end.distanceMeters),
         String(endTotal),
         end.photoFileId || "",
         end.photoName || "",
@@ -150,12 +151,12 @@ export async function pushSessions(spreadsheetId: string, sessions: Session[], a
     }
   }
 
-  await clearDataRows(spreadsheetId, "sessions!A2:H", accessToken);
+  await clearDataRows(spreadsheetId, "sessions!A2:I", accessToken);
   await clearDataRows(spreadsheetId, "ends!A2:J", accessToken);
   await clearDataRows(spreadsheetId, "shots!A2:E", accessToken);
 
   if (sessionRows.length) {
-    await writeRange(spreadsheetId, `sessions!A2:H${sessionRows.length + 1}`, sessionRows, accessToken);
+    await writeRange(spreadsheetId, `sessions!A2:I${sessionRows.length + 1}`, sessionRows, accessToken);
   }
   if (endRows.length) {
     await writeRange(spreadsheetId, `ends!A2:J${endRows.length + 1}`, endRows, accessToken);
@@ -177,7 +178,7 @@ async function getSheetValues(spreadsheetId: string, range: string, accessToken:
 
 export async function pullSessions(spreadsheetId: string, accessToken: string): Promise<Session[]> {
   const [sessionRows, endRows, shotRows] = await Promise.all([
-    getSheetValues(spreadsheetId, "sessions!A2:H", accessToken),
+    getSheetValues(spreadsheetId, "sessions!A2:I", accessToken),
     getSheetValues(spreadsheetId, "ends!A2:J", accessToken),
     getSheetValues(spreadsheetId, "shots!A2:E", accessToken)
   ]);
@@ -201,7 +202,7 @@ export async function pullSessions(spreadsheetId: string, accessToken: string): 
     Array<{
       endId: string;
       endIndex: number;
-      distanceMeters: number;
+      distanceMeters: number | null;
       photoFileId: string | null;
       photoName: string | null;
       photoUploadedAt: string | null;
@@ -215,7 +216,7 @@ export async function pullSessions(spreadsheetId: string, accessToken: string): 
       sessionId = "",
       endIndex = "0",
       ,
-      distanceMeters = "18",
+      distanceMeters = "",
       ,
       photoFileId = "",
       photoName = "",
@@ -227,7 +228,7 @@ export async function pullSessions(spreadsheetId: string, accessToken: string): 
     list.push({
       endId,
       endIndex: Number(endIndex),
-      distanceMeters: Number(distanceMeters) || 18,
+      distanceMeters: distanceMeters ? Number(distanceMeters) || null : null,
       photoFileId: photoFileId || null,
       photoName: photoName || null,
       photoUploadedAt: photoUploadedAt || null,
@@ -245,6 +246,25 @@ export async function pullSessions(spreadsheetId: string, accessToken: string): 
     const notes = row.length >= 6 ? row[5] || "" : row[4] || "";
     const locationLat = row.length >= 8 && row[6] ? Number(row[6]) : null;
     const locationLng = row.length >= 8 && row[7] ? Number(row[7]) : null;
+    const photosJson = row.length >= 9 ? row[8] || "" : "";
+    let photos: Session["photos"] = [];
+    if (photosJson) {
+      try {
+        const parsed = JSON.parse(photosJson) as Session["photos"];
+        if (Array.isArray(parsed)) {
+          photos = parsed
+            .filter((photo) => photo && typeof photo.fileId === "string")
+            .map((photo) => ({
+              fileId: photo.fileId,
+              name: photo.name || "Session photo",
+              webViewLink: photo.webViewLink || null,
+              uploadedAt: photo.uploadedAt || new Date().toISOString()
+            }));
+        }
+      } catch {
+        photos = [];
+      }
+    }
     sessions.push({
       sessionId,
       sessionDate,
@@ -254,6 +274,7 @@ export async function pullSessions(spreadsheetId: string, accessToken: string): 
       locationLat: Number.isFinite(locationLat) ? locationLat : null,
       locationLng: Number.isFinite(locationLng) ? locationLng : null,
       notes,
+      photos,
       ends: (endsBySession.get(sessionId) || []).sort((a, b) => a.endIndex - b.endIndex)
     });
   }

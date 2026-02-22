@@ -1,13 +1,17 @@
 "use client";
 
-import { CSSProperties, useMemo, useState } from "react";
+import { CSSProperties, useEffect, useMemo, useRef, useState } from "react";
+import Image from "next/image";
+import { dateIsoInSf, sfMonthLabel } from "@/lib/date-utils";
 import { lifetimeStats, sessionArrows, sessionAvgPerArrow, sessionTotal } from "@/lib/metrics";
 import { ShotWheelPicker } from "@/components/shot-wheel-picker";
 import { End, Session } from "@/lib/types";
 import { useArcheryApp } from "@/lib/use-archery-app";
 import { reverseGeocode, uploadEndPhoto } from "@/lib/client-api";
+import { shopProducts } from "@/lib/shop-products";
 
-type Tab = "editor" | "history" | "analytics" | "account";
+type Tab = "editor" | "shop" | "analytics" | "account";
+type ViewMode = "dashboard" | Tab;
 
 function StatCard({ label, value }: { label: string; value: string }) {
   return (
@@ -21,10 +25,11 @@ function StatCard({ label, value }: { label: string; value: string }) {
 function addEnd(session: Session): Session {
   const nextIndex = session.ends.length + 1;
   const sessionShotsCount = session.ends[0]?.shots.length || 5;
+  const sessionDistanceMeters = session.ends[0]?.distanceMeters ?? null;
   const newEnd: End = {
     endId: crypto.randomUUID(),
     endIndex: nextIndex,
-    distanceMeters: 18,
+    distanceMeters: sessionDistanceMeters,
     shots: Array.from({ length: sessionShotsCount }, (_, i) => ({
       shotId: crypto.randomUUID(),
       shotIndex: i + 1,
@@ -67,6 +72,17 @@ function removeEnd(session: Session, endId: string): Session {
   };
 }
 
+function applyDistanceToAllEnds(session: Session, distanceMeters: number | null): Session {
+  return {
+    ...session,
+    ends: session.ends.map((end) => ({ ...end, distanceMeters }))
+  };
+}
+
+function driveThumbUrl(fileId: string): string {
+  return `/api/photos/file?fileId=${encodeURIComponent(fileId)}`;
+}
+
 export function AppShell() {
   const {
     authSession,
@@ -75,7 +91,6 @@ export function AppShell() {
     activeSession,
     activeSessionId,
     setActiveSessionId,
-    syncState,
     errorMessage,
     isLoading,
     updateSession,
@@ -85,16 +100,43 @@ export function AppShell() {
     signOut
   } = useArcheryApp();
 
-  const [tab, setTab] = useState<Tab>("editor");
+  const [viewMode, setViewMode] = useState<ViewMode>("dashboard");
   const [uploadingEndId, setUploadingEndId] = useState<string | null>(null);
+  const [isUploadingSessionPhoto, setIsUploadingSessionPhoto] = useState(false);
   const [isLocating, setIsLocating] = useState(false);
   const [locationNotice, setLocationNotice] = useState<{ type: "info" | "warn" | "error"; text: string } | null>(null);
+  const [sessionDistanceDraft, setSessionDistanceDraft] = useState("");
+  const [distanceReminder, setDistanceReminder] = useState(false);
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState<string | null>(null);
+  const [expandedCalendarSessionId, setExpandedCalendarSessionId] = useState<string | null>(null);
+  const sessionDistanceInputRef = useRef<HTMLInputElement | null>(null);
+  const [calendarMonth, setCalendarMonth] = useState(() => {
+    const [year, month] = dateIsoInSf().split("-");
+    return {
+      year: Number(year),
+      month: Number(month) - 1
+    };
+  });
 
   const stats = useMemo(() => lifetimeStats(sessions), [sessions]);
+  const shopByCategory = useMemo(() => {
+    const grouped = new Map<string, typeof shopProducts>();
+    for (const product of shopProducts) {
+      const existing = grouped.get(product.category) || [];
+      grouped.set(product.category, [...existing, product]);
+    }
+    return grouped;
+  }, []);
+  const publishedSessions = useMemo(() => sessions.filter((session) => !session.isLocalOnly), [sessions]);
   const sessionShotsCount = useMemo(() => {
     if (!activeSession) return 5;
     return activeSession.ends[0]?.shots.length || 5;
   }, [activeSession]);
+  const sessionDistanceMeters = useMemo(() => {
+    if (!activeSession) return null;
+    return activeSession.ends[0]?.distanceMeters ?? null;
+  }, [activeSession]);
+  const sessionHasDistance = typeof sessionDistanceMeters === "number" && sessionDistanceMeters > 0;
   const maxShots = useMemo(() => {
     if (!activeSession) return 5;
     return Math.max(5, ...activeSession.ends.map((end) => end.shots.length));
@@ -113,11 +155,85 @@ export function AppShell() {
     }
     return totals;
   }, [activeSession]);
-  const selectedHistorySession = useMemo(() => {
-    if (!sessions.length) return null;
-    if (!activeSessionId) return sessions[0];
-    return sessions.find((session) => session.sessionId === activeSessionId) || sessions[0];
-  }, [activeSessionId, sessions]);
+  const calendarModel = useMemo(() => {
+    const y = calendarMonth.year;
+    const m = calendarMonth.month;
+    const start = new Date(y, m, 1);
+    const end = new Date(y, m + 1, 0);
+    const startWeekday = start.getDay();
+    const totalDays = end.getDate();
+    const todayIso = dateIsoInSf();
+
+    const counts = new Map<string, number>();
+    for (const session of publishedSessions) {
+      counts.set(session.sessionDate, (counts.get(session.sessionDate) || 0) + 1);
+    }
+
+    const cells: Array<{ date: string; day: number; inMonth: boolean; count: number; isFuture: boolean }> = [];
+    for (let i = 0; i < startWeekday; i += 1) {
+      cells.push({ date: "", day: 0, inMonth: false, count: 0, isFuture: false });
+    }
+
+    for (let day = 1; day <= totalDays; day += 1) {
+      const date = `${y}-${String(m + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      const isFuture = date > todayIso;
+      cells.push({
+        date,
+        day,
+        inMonth: true,
+        count: counts.get(date) || 0,
+        isFuture
+      });
+    }
+
+    while (cells.length % 7 !== 0) {
+      cells.push({ date: "", day: 0, inMonth: false, count: 0, isFuture: false });
+    }
+
+    const monthKey = `${y}-${String(m + 1).padStart(2, "0")}`;
+    const monthSessions = [...publishedSessions]
+      .filter((session) => session.sessionDate.startsWith(monthKey))
+      .sort((a, b) => b.sessionDate.localeCompare(a.sessionDate));
+    const datesWithSessions = Array.from(new Set(monthSessions.map((session) => session.sessionDate))).sort((a, b) =>
+      b.localeCompare(a)
+    );
+
+    return {
+      monthLabel: sfMonthLabel(y, m),
+      cells,
+      monthSessions,
+      datesWithSessions
+    };
+  }, [calendarMonth.month, calendarMonth.year, publishedSessions]);
+
+  useEffect(() => {
+    if (!calendarModel.datesWithSessions.length) {
+      setSelectedCalendarDate(null);
+      setExpandedCalendarSessionId(null);
+      return;
+    }
+
+    setSelectedCalendarDate((current) =>
+      current && calendarModel.datesWithSessions.includes(current) ? current : calendarModel.datesWithSessions[0]
+    );
+  }, [calendarModel.datesWithSessions]);
+
+  const selectedDateSessions = useMemo(() => {
+    if (!selectedCalendarDate) return [] as Session[];
+    return publishedSessions
+      .filter((session) => session.sessionDate === selectedCalendarDate)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }, [selectedCalendarDate, publishedSessions]);
+
+  useEffect(() => {
+    setSessionDistanceDraft("");
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    if (sessionHasDistance) {
+      setDistanceReminder(false);
+    }
+  }, [sessionHasDistance]);
 
   async function handlePhotoUpload(endId: string, file: File) {
     if (!meta || !activeSession) return;
@@ -129,12 +245,12 @@ export function AppShell() {
         ends: session.ends.map((end) =>
           end.endId === endId
             ? {
-                ...end,
-                photoFileId: uploaded.fileId,
-                photoName: uploaded.name,
-                photoUploadedAt: new Date().toISOString(),
-                photoWebViewLink: uploaded.webViewLink || null
-              }
+              ...end,
+              photoFileId: uploaded.fileId,
+              photoName: uploaded.name,
+              photoUploadedAt: new Date().toISOString(),
+              photoWebViewLink: uploaded.webViewLink || null
+            }
             : end
         )
       }));
@@ -142,6 +258,31 @@ export function AppShell() {
       console.error(error instanceof Error ? error.message : "Photo upload failed");
     } finally {
       setUploadingEndId(null);
+    }
+  }
+
+  async function handleSessionPhotoUpload(file: File) {
+    if (!meta || !activeSession) return;
+    setIsUploadingSessionPhoto(true);
+    try {
+      const uploaded = await uploadEndPhoto(meta.spreadsheetId, activeSession.sessionId, file);
+      const uploadedAt = new Date().toISOString();
+      updateSession((session) => ({
+        ...session,
+        photos: [
+          ...(session.photos || []),
+          {
+            fileId: uploaded.fileId,
+            name: uploaded.name,
+            webViewLink: uploaded.webViewLink || null,
+            uploadedAt
+          }
+        ]
+      }));
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : "Session photo upload failed");
+    } finally {
+      setIsUploadingSessionPhoto(false);
     }
   }
 
@@ -183,11 +324,10 @@ export function AppShell() {
           usedAddress
             ? { type: "info", text: "Location auto-filled from nearest address." }
             : {
-                type: "warn",
-                text: `Could not resolve nearest address. Saved coordinates instead.${
-                  geocodeFailure ? ` (${geocodeFailure})` : ""
+              type: "warn",
+              text: `Could not resolve nearest address. Saved coordinates instead.${geocodeFailure ? ` (${geocodeFailure})` : ""
                 }`
-              }
+            }
         );
 
         setIsLocating(false);
@@ -204,6 +344,26 @@ export function AppShell() {
     );
   }
 
+  async function handleSaveAndSync() {
+    await syncNow(activeSession?.isLocalOnly ? { publishSessionId: activeSession.sessionId } : undefined);
+    setViewMode("dashboard");
+  }
+
+  function leaveEditorIfUnsavedDraft(nextView: ViewMode) {
+    if (viewMode === "editor" && activeSession?.isLocalOnly) {
+      deleteSession(activeSession.sessionId);
+    }
+    setViewMode(nextView);
+  }
+
+  function handleStartNewSession() {
+    if (viewMode === "editor" && activeSession?.isLocalOnly) {
+      deleteSession(activeSession.sessionId);
+    }
+    addSession(dateIsoInSf());
+    setViewMode("editor");
+  }
+
   if (isLoading) {
     return (
       <main className="page-wrap">
@@ -217,7 +377,7 @@ export function AppShell() {
       <main className="page-wrap">
         <section className="hero-card hero-split">
           <div className="hero-copy">
-            <span className="eyebrow">Shoot With Ceech</span>
+            <span className="eyebrow">Archery With Ceech</span>
             <h1>Train any day. Own every session.</h1>
             <p>
               Sign in with Google, grant read/write access to your spreadsheet, and keep your archery history
@@ -241,50 +401,247 @@ export function AppShell() {
     <main className="page-wrap">
       <header className="topbar">
         <div>
-          <span className="eyebrow">Personal Sheets Edition</span>
-          <h1>Shoot With Ceech</h1>
+          <button className="eyebrow-link" onClick={() => leaveEditorIfUnsavedDraft("dashboard")}>Personal Sheets Edition</button>
+          <h1>
+            <button className="title-link" onClick={() => leaveEditorIfUnsavedDraft("dashboard")}>
+              Archery With Ceech
+            </button>
+          </h1>
         </div>
         <div className="topbar-actions">
-          <span className={`sync-pill ${syncState.replace(" ", "-").toLowerCase()}`}>{syncState}</span>
-          <button className="button" onClick={() => void syncNow()}>
-            Sync now
-          </button>
           <button className="button" onClick={() => void signOut()}>
             Log out
           </button>
         </div>
       </header>
 
-      <section className="stats-grid">
-        <StatCard label="Sessions" value={String(stats.sessionCount)} />
-        <StatCard label="Arrows" value={String(stats.arrowCount)} />
-        <StatCard label="Avg/Arrow" value={stats.avgPerArrow.toFixed(2)} />
-        <StatCard label="Total Points" value={String(stats.totalPoints)} />
-      </section>
-
       {errorMessage ? <p className="error-banner">{errorMessage}</p> : null}
 
       <nav className="tabbar" aria-label="Primary sections">
         {([
-          ["editor", "Session Editor"],
-          ["history", "History"],
+          ["editor", "New Session"],
+          ["shop", "Shop"],
           ["analytics", "Analytics"],
           ["account", "Account"]
         ] as Array<[Tab, string]>).map(([value, label]) => (
           <button
             key={value}
-            className={`tab-button ${tab === value ? "active" : ""}`}
-            onClick={() => setTab(value)}
+            className={`tab-button ${viewMode === value ? "active" : ""}`}
+            onClick={() => {
+              if (value === "editor") {
+                handleStartNewSession();
+                return;
+              }
+              leaveEditorIfUnsavedDraft(value);
+            }}
           >
             {label}
           </button>
         ))}
       </nav>
 
-      {tab === "editor" && activeSession ? (
+      {viewMode === "dashboard" ? (
+        <section className="panel dashboard-panel">
+          <div className="panel-head">
+            <h2>Training Calendar</h2>
+            <div className="month-nav">
+              <button
+                className="icon-button"
+                aria-label="Previous month"
+                onClick={() =>
+                  setCalendarMonth((current) => {
+                    const nextMonth = current.month - 1;
+                    if (nextMonth < 0) return { year: current.year - 1, month: 11 };
+                    return { year: current.year, month: nextMonth };
+                  })
+                }
+              >
+                &lt;
+              </button>
+              <span>{calendarModel.monthLabel}</span>
+              <button
+                className="icon-button"
+                aria-label="Next month"
+                onClick={() =>
+                  setCalendarMonth((current) => {
+                    const nextMonth = current.month + 1;
+                    if (nextMonth > 11) return { year: current.year + 1, month: 0 };
+                    return { year: current.year, month: nextMonth };
+                  })
+                }
+              >
+                &gt;
+              </button>
+            </div>
+          </div>
+          <div className="calendar-grid-head">
+            {"Sun Mon Tue Wed Thu Fri Sat".split(" ").map((name) => (
+              <span key={name}>{name}</span>
+            ))}
+          </div>
+          <div className="calendar-grid">
+            {calendarModel.cells.map((cell, index) => (
+              <div
+                key={`${cell.date}-${index}`}
+                className={`calendar-cell ${cell.inMonth ? "" : "out"} ${
+                  cell.inMonth && cell.count ? "has-sessions" : ""
+                } ${
+                  cell.inMonth && cell.date === selectedCalendarDate ? "selected" : ""
+                }`}
+                onClick={() => {
+                  if (!cell.inMonth || !cell.count) return;
+                  setSelectedCalendarDate(cell.date);
+                  setExpandedCalendarSessionId(null);
+                }}
+              >
+                {cell.inMonth ? (
+                  <>
+                    <span className={`calendar-day ${cell.isFuture ? "future" : "past"}`}>{cell.day}</span>
+                    {cell.count ? (
+                      <button
+                        type="button"
+                        className="calendar-count"
+                        aria-label={`${cell.count} session${cell.count > 1 ? "s" : ""}`}
+                        title={`${cell.count} session${cell.count > 1 ? "s" : ""}`}
+                        onClick={() => {
+                          setSelectedCalendarDate(cell.date);
+                          setExpandedCalendarSessionId(null);
+                        }}
+                      >
+                        <span className="calendar-dot" aria-hidden="true" />
+                        {cell.count}
+                      </button>
+                    ) : null}
+                  </>
+                ) : null}
+              </div>
+            ))}
+          </div>
+          <div className="dashboard-lists">
+            <div>
+              <h3>{selectedCalendarDate ? `Sessions on ${selectedCalendarDate}` : `Sessions in ${calendarModel.monthLabel}`}</h3>
+              {calendarModel.datesWithSessions.length ? (
+                <div className="date-chip-row" aria-label="Session dates in this month">
+                  {calendarModel.datesWithSessions.map((date) => (
+                    <button
+                      key={date}
+                      type="button"
+                      className={`date-chip ${selectedCalendarDate === date ? "active" : ""}`}
+                      onClick={() => {
+                        setSelectedCalendarDate(date);
+                        setExpandedCalendarSessionId(null);
+                      }}
+                    >
+                      {date}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              <div className="history-list">
+                {selectedDateSessions.length ? (
+                  selectedDateSessions.map((session) => {
+                    const isExpanded = expandedCalendarSessionId === session.sessionId;
+                    return (
+                      <article key={session.sessionId} className={`history-item ${isExpanded ? "active" : ""}`}>
+                        <div className="history-item-head">
+                          <button
+                            className="history-toggle"
+                            aria-expanded={isExpanded}
+                            onClick={() =>
+                              setExpandedCalendarSessionId((current) =>
+                                current === session.sessionId ? null : session.sessionId
+                              )
+                            }
+                          >
+                            <strong className="history-date-clickable">{session.sessionDate}</strong>
+                            <span>{session.ends.length} ends</span>
+                            <span>{sessionArrows(session)} arrows</span>
+                            <span>{sessionTotal(session)} pts</span>
+                            <span className="history-expand-hint">{isExpanded ? "Hide details" : "View details"}</span>
+                          </button>
+                          <div className="history-item-actions">
+                            <button
+                              className="icon-action"
+                              title={`Edit ${session.sessionDate}`}
+                              aria-label={`Edit ${session.sessionDate}`}
+                              onClick={() => {
+                                setActiveSessionId(session.sessionId);
+                                setViewMode("editor");
+                              }}
+                            >
+                              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <path d="M16.8 3.5a2.4 2.4 0 0 1 3.4 3.4l-9.6 9.6-4.4 1 1-4.4 9.6-9.6Zm-8 10.3-.4 1.8 1.8-.4 8.7-8.7-1.4-1.4-8.7 8.7Z" />
+                              </svg>
+                            </button>
+                            <button
+                              className="icon-action danger"
+                              title={`Delete ${session.sessionDate}`}
+                              aria-label={`Delete ${session.sessionDate}`}
+                              onClick={() => deleteSession(session.sessionId)}
+                            >
+                              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm1 7h2v8h-2v-8Zm4 0h2v8h-2v-8ZM8 10h2v8H8v-8Z" />
+                              </svg>
+                            </button>
+                          </div>
+                        </div>
+                        {isExpanded ? (
+                          <div className="history-detail-inline">
+                            <div className="panel-head">
+                              <h3>{session.sessionDate} (Read Only)</h3>
+                              <span>{session.location || "No location"}</span>
+                            </div>
+                            <p className="helper-text">{session.notes || "No notes for this session."}</p>
+                            <div className="history-ends-readonly">
+                              {session.ends.map((end) => (
+                                <div key={end.endId} className="history-end-row">
+                                  <span>End {end.endIndex}</span>
+                                  <span>{end.distanceMeters == null ? "-" : `${end.distanceMeters}m`}</span>
+                                  <span>{end.shots.map((shot) => shot.value).join(" ")}</span>
+                                  <strong>{end.shots.reduce((sum, shot) => sum + shot.score, 0)}</strong>
+                                  {end.photoWebViewLink && end.photoFileId ? (
+                                    <a
+                                      className="history-photo-link"
+                                      href={end.photoWebViewLink}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      title="Open full-size photo"
+                                      aria-label="Open full-size photo"
+                                    >
+                                      <Image
+                                        className="history-photo-thumb"
+                                        src={driveThumbUrl(end.photoFileId)}
+                                        alt={`End ${end.endIndex} photo thumbnail`}
+                                        width={58}
+                                        height={42}
+                                        loading="lazy"
+                                        unoptimized
+                                      />
+                                    </a>
+                                  ) : (
+                                    <span className="tiny-link muted">No Photo</span>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                      </article>
+                    );
+                  })
+                ) : (
+                  <p className="helper-text">Select a day with session dots to review history.</p>
+                )}
+              </div>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {viewMode === "editor" && activeSession ? (
         <section className="panel">
           <div className="panel-head">
-            <h2>Session Editor</h2>
+            <h2>New Session</h2>
             <div className="stack-row">
               <input
                 type="date"
@@ -293,11 +650,54 @@ export function AppShell() {
                   updateSession((session) => ({ ...session, sessionDate: event.target.value || session.sessionDate }))
                 }
               />
-              <button className="button" onClick={() => addSession(new Date().toISOString().slice(0, 10))}>
-                New Session
-              </button>
+              <label className="distance-field inline">
+                <input
+                  type="number"
+                  min={1}
+                  max={300}
+                  placeholder="Distance (m)"
+                  value={sessionDistanceDraft || (sessionHasDistance ? String(sessionDistanceMeters) : "")}
+                  ref={sessionDistanceInputRef}
+                  className={!sessionHasDistance && distanceReminder ? "needs-attention" : ""}
+                  onChange={(event) => {
+                    const raw = event.target.value;
+                    setSessionDistanceDraft(raw);
+
+                    if (!raw.trim()) {
+                      updateSession((session) => applyDistanceToAllEnds(session, null));
+                      return;
+                    }
+
+                    const parsed = Number(raw);
+                    if (!Number.isFinite(parsed)) return;
+                    const nextMeters = Math.min(300, Math.max(1, Math.round(parsed)));
+                    setDistanceReminder(false);
+                    updateSession((session) => applyDistanceToAllEnds(session, nextMeters));
+                  }}
+                  onBlur={() => {
+                    const raw = sessionDistanceDraft;
+                    if (!raw.trim()) {
+                      setSessionDistanceDraft("");
+                      return;
+                    }
+
+                    const parsed = Number(raw);
+                    if (Number.isFinite(parsed)) {
+                      const nextMeters = Math.min(300, Math.max(1, Math.round(parsed)));
+                      setDistanceReminder(false);
+                      updateSession((session) => applyDistanceToAllEnds(session, nextMeters));
+                    }
+                    setSessionDistanceDraft("");
+                  }}
+                />
+              </label>
             </div>
           </div>
+          {!sessionHasDistance ? (
+            <p className={`helper-text ${distanceReminder ? "warn" : ""}`}>
+              Enter session distance first, then you can add shot values.
+            </p>
+          ) : null}
 
           <label className="field-label">
             Location
@@ -351,6 +751,63 @@ export function AppShell() {
             />
           </label>
 
+          <section className="field-label">
+            Photos
+            <div className="session-photos-head">
+              <input
+                id="session-photo-upload"
+                className="sr-only"
+                type="file"
+                accept="image/*"
+                capture="environment"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (!file) return;
+                  void handleSessionPhotoUpload(file);
+                  event.currentTarget.value = "";
+                }}
+              />
+              <label className="icon-action" htmlFor="session-photo-upload" aria-label="Take session photo" title="Take session photo">
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M7 6h3l1.4-2h5.2L18 6h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3Zm5 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10Zm0-2.2a2.8 2.8 0 1 1 0-5.6 2.8 2.8 0 0 1 0 5.6Z" />
+                </svg>
+              </label>
+              {isUploadingSessionPhoto ? <span className="tiny-link">Uploading...</span> : null}
+            </div>
+            <div className="session-photos-grid">
+              {(activeSession.photos || []).length ? (
+                (activeSession.photos || []).map((photo) => (
+                  <a
+                    key={photo.fileId}
+                    className="session-photo-thumb-link"
+                    href={photo.webViewLink || "#"}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label="Open session photo"
+                    title={photo.name}
+                    onClick={(event) => {
+                      if (!photo.webViewLink) {
+                        event.preventDefault();
+                      }
+                    }}
+                  >
+                    <Image
+                      className="session-photo-thumb"
+                      src={driveThumbUrl(photo.fileId)}
+                      alt={photo.name || "Session photo"}
+                      width={72}
+                      height={56}
+                      loading="lazy"
+                      unoptimized
+                    />
+                  </a>
+                ))
+              ) : (
+                <span className="tiny-link muted">No photos yet.</span>
+              )}
+            </div>
+          </section>
+
           <div className="ends-grid">
             <div className="score-table-wrap" style={scoreTableStyle}>
               <div className="ends-toolbar">
@@ -396,123 +853,112 @@ export function AppShell() {
                 const running = runningTotals.get(end.endId) ?? 0;
 
                 return (
-              <article key={end.endId} className="end-card">
-                <h3>End {end.endIndex}</h3>
-                <label className="distance-field inline">
-                  <input
-                    type="number"
-                    min={1}
-                    max={300}
-                    value={end.distanceMeters}
-                    onChange={(event) => {
-                      const nextMeters = Math.min(300, Math.max(1, Math.round(Number(event.target.value) || 1)));
-                      updateSession((session) => ({
-                        ...session,
-                        ends: session.ends.map((currentEnd) =>
-                          currentEnd.endId === end.endId
-                            ? { ...currentEnd, distanceMeters: nextMeters }
-                            : currentEnd
-                        )
-                      }));
-                    }}
-                  />
-                </label>
-                <p className="shots-count-static">{end.shots.length}</p>
-                <div className="shots-grid inline-scores">
-                  {end.shots.map((shot) => (
-                    <div key={shot.shotId} className="shot-input">
-                      <span>{shot.shotIndex}</span>
-                      <ShotWheelPicker
-                        value={shot.value}
-                        label={`End ${end.endIndex} Shot ${shot.shotIndex}`}
-                        onChange={({ value, score }) => {
-                          updateSession((session) => ({
-                            ...session,
-                            ends: session.ends.map((currentEnd) =>
-                              currentEnd.endId === end.endId
-                                ? {
-                                    ...currentEnd,
-                                    shots: currentEnd.shots.map((currentShot) =>
-                                      currentShot.shotId === shot.shotId
-                                        ? { ...currentShot, score, value }
-                                        : currentShot
-                                    )
-                                  }
-                                : currentEnd
-                            )
-                          }));
+                  <article key={end.endId} className="end-card">
+                    <h3>End {end.endIndex}</h3>
+                    <p className="shots-count-static">{sessionHasDistance ? `${sessionDistanceMeters}m` : "-"}</p>
+                    <p className="shots-count-static">{end.shots.length}</p>
+                    <div className="shots-grid inline-scores">
+                      {end.shots.map((shot) => (
+                        <div key={shot.shotId} className="shot-input">
+                          <span>{shot.shotIndex}</span>
+                          <ShotWheelPicker
+                            value={shot.value}
+                            label={`End ${end.endIndex} Shot ${shot.shotIndex}`}
+                            onOpenAttempt={() => {
+                              if (sessionHasDistance) return true;
+                              setDistanceReminder(true);
+                              sessionDistanceInputRef.current?.focus();
+                              return false;
+                            }}
+                            onChange={({ value, score }) => {
+                              if (!sessionHasDistance) return;
+                              updateSession((session) => ({
+                                ...session,
+                                ends: session.ends.map((currentEnd) =>
+                                  currentEnd.endId === end.endId
+                                    ? {
+                                      ...currentEnd,
+                                      shots: currentEnd.shots.map((currentShot) =>
+                                        currentShot.shotId === shot.shotId
+                                          ? { ...currentShot, score, value }
+                                          : currentShot
+                                      )
+                                    }
+                                    : currentEnd
+                                )
+                              }));
+                            }}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                    <p className="end-total"><strong>{total}</strong></p>
+                    <p className="end-total"><strong>{xCount}</strong></p>
+                    <p className="end-total"><strong>{running}</strong></p>
+                    <p className="mobile-end-summary">
+                      <span>End Total: <strong>{total}</strong></span>
+                      <span>X: <strong>{xCount}</strong></span>
+                      <span>Running Total: <strong>{running}</strong></span>
+                    </p>
+                    <div className="end-actions">
+                      <span className={`photo-indicator ${end.photoFileId ? "attached" : ""}`} aria-hidden="true" />
+                      <input
+                        id={`photo-upload-${end.endId}`}
+                        className="sr-only"
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        onChange={(event) => {
+                          const file = event.target.files?.[0];
+                          if (!file) return;
+                          void handlePhotoUpload(end.endId, file);
+                          event.currentTarget.value = "";
                         }}
                       />
+                      <label
+                        htmlFor={`photo-upload-${end.endId}`}
+                        className="icon-action"
+                        title={end.photoFileId ? "Replace end photo" : "Add end photo"}
+                        aria-label={end.photoFileId ? "Replace end photo" : "Add end photo"}
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                          <path d="M7 6h3l1.4-2h5.2L18 6h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3Zm5 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10Zm0-2.2a2.8 2.8 0 1 1 0-5.6 2.8 2.8 0 0 1 0 5.6Z" />
+                        </svg>
+                      </label>
+                      <a
+                        className="icon-action"
+                        href={end.photoWebViewLink || "#"}
+                        target="_blank"
+                        rel="noreferrer"
+                        title={end.photoWebViewLink ? "View photo" : "No photo attached"}
+                        aria-label={end.photoWebViewLink ? "View photo" : "No photo attached"}
+                        aria-disabled={!end.photoWebViewLink}
+                        onClick={(event) => {
+                          if (!end.photoWebViewLink) {
+                            event.preventDefault();
+                          }
+                        }}
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                          <path d="M12 5c5.6 0 9.7 4.3 11 6.5-1.3 2.2-5.4 6.5-11 6.5S2.3 13.7 1 11.5C2.3 9.3 6.4 5 12 5Zm0 2c-4.2 0-7.4 2.8-8.8 4.5C4.6 13.2 7.8 16 12 16s7.4-2.8 8.8-4.5C19.4 9.8 16.2 7 12 7Zm0 1.6a2.9 2.9 0 1 1 0 5.8 2.9 2.9 0 0 1 0-5.8Z" />
+                        </svg>
+                      </a>
+                      <button
+                        className="icon-action danger"
+                        disabled={activeSession.ends.length <= 1}
+                        title={activeSession.ends.length <= 1 ? "At least one end is required" : `Remove end ${end.endIndex}`}
+                        aria-label={activeSession.ends.length <= 1 ? "Cannot remove last end" : `Remove end ${end.endIndex}`}
+                        onClick={() =>
+                          updateSession((session) => removeEnd(session, end.endId))
+                        }
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                          <path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm1 7h2v8h-2v-8Zm4 0h2v8h-2v-8ZM8 10h2v8H8v-8Z" />
+                        </svg>
+                      </button>
+                      {uploadingEndId === end.endId ? <span className="tiny-link">Uploading...</span> : null}
                     </div>
-                  ))}
-                </div>
-                <p className="end-total"><strong>{total}</strong></p>
-                <p className="end-total"><strong>{xCount}</strong></p>
-                <p className="end-total"><strong>{running}</strong></p>
-                <p className="mobile-end-summary">
-                  <span>End Total: <strong>{total}</strong></span>
-                  <span>X: <strong>{xCount}</strong></span>
-                  <span>Running Total: <strong>{running}</strong></span>
-                </p>
-                <div className="end-actions">
-                  <span className={`photo-indicator ${end.photoFileId ? "attached" : ""}`} aria-hidden="true" />
-                  <input
-                    id={`photo-upload-${end.endId}`}
-                    className="sr-only"
-                    type="file"
-                    accept="image/*"
-                    capture="environment"
-                    onChange={(event) => {
-                      const file = event.target.files?.[0];
-                      if (!file) return;
-                      void handlePhotoUpload(end.endId, file);
-                      event.currentTarget.value = "";
-                    }}
-                  />
-                  <label
-                    htmlFor={`photo-upload-${end.endId}`}
-                    className="icon-action"
-                    title={end.photoFileId ? "Replace end photo" : "Add end photo"}
-                    aria-label={end.photoFileId ? "Replace end photo" : "Add end photo"}
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                      <path d="M7 6h3l1.4-2h5.2L18 6h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3Zm5 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10Zm0-2.2a2.8 2.8 0 1 1 0-5.6 2.8 2.8 0 0 1 0 5.6Z" />
-                    </svg>
-                  </label>
-                  <a
-                    className="icon-action"
-                    href={end.photoWebViewLink || "#"}
-                    target="_blank"
-                    rel="noreferrer"
-                    title={end.photoWebViewLink ? "View photo" : "No photo attached"}
-                    aria-label={end.photoWebViewLink ? "View photo" : "No photo attached"}
-                    aria-disabled={!end.photoWebViewLink}
-                    onClick={(event) => {
-                      if (!end.photoWebViewLink) {
-                        event.preventDefault();
-                      }
-                    }}
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                      <path d="M12 5c5.6 0 9.7 4.3 11 6.5-1.3 2.2-5.4 6.5-11 6.5S2.3 13.7 1 11.5C2.3 9.3 6.4 5 12 5Zm0 2c-4.2 0-7.4 2.8-8.8 4.5C4.6 13.2 7.8 16 12 16s7.4-2.8 8.8-4.5C19.4 9.8 16.2 7 12 7Zm0 1.6a2.9 2.9 0 1 1 0 5.8 2.9 2.9 0 0 1 0-5.8Z" />
-                    </svg>
-                  </a>
-                  <button
-                    className="icon-action danger"
-                    disabled={activeSession.ends.length <= 1}
-                    title={activeSession.ends.length <= 1 ? "At least one end is required" : `Remove end ${end.endIndex}`}
-                    aria-label={activeSession.ends.length <= 1 ? "Cannot remove last end" : `Remove end ${end.endIndex}`}
-                    onClick={() =>
-                      updateSession((session) => removeEnd(session, end.endId))
-                    }
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                      <path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm1 7h2v8h-2v-8Zm4 0h2v8h-2v-8ZM8 10h2v8H8v-8Z" />
-                    </svg>
-                  </button>
-                  {uploadingEndId === end.endId ? <span className="tiny-link">Uploading...</span> : null}
-                </div>
-              </article>
+                  </article>
                 );
               })}
             </div>
@@ -520,7 +966,7 @@ export function AppShell() {
               <button className="button" onClick={() => updateSession((session) => addEnd(session))}>
                 + Add End
               </button>
-              <button className="button primary" onClick={() => void syncNow()}>
+              <button className="button primary" onClick={() => void handleSaveAndSync()}>
                 Save + Sync
               </button>
             </div>
@@ -528,69 +974,7 @@ export function AppShell() {
         </section>
       ) : null}
 
-      {tab === "history" ? (
-        <section className="panel">
-          <h2>History</h2>
-          <div className="history-list">
-            {sessions.map((session) => (
-              <article key={session.sessionId} className={`history-item ${activeSessionId === session.sessionId ? "active" : ""}`}>
-                <button onClick={() => setActiveSessionId(session.sessionId)}>
-                  <strong>{session.sessionDate}</strong>
-                  <span>{session.ends.length} ends</span>
-                  <span>{sessionArrows(session)} arrows</span>
-                  <span>{sessionTotal(session)} pts</span>
-                </button>
-                <div className="history-item-actions">
-                  <button
-                    className="icon-action"
-                    title={`Edit ${session.sessionDate}`}
-                    aria-label={`Edit ${session.sessionDate}`}
-                    onClick={() => {
-                      setActiveSessionId(session.sessionId);
-                      setTab("editor");
-                    }}
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                      <path d="M16.8 3.5a2.4 2.4 0 0 1 3.4 3.4l-9.6 9.6-4.4 1 1-4.4 9.6-9.6Zm-8 10.3-.4 1.8 1.8-.4 8.7-8.7-1.4-1.4-8.7 8.7Z" />
-                    </svg>
-                  </button>
-                  <button className="danger-link" onClick={() => deleteSession(session.sessionId)}>
-                    Delete
-                  </button>
-                </div>
-              </article>
-            ))}
-          </div>
-          {selectedHistorySession ? (
-            <article className="history-detail-card">
-              <div className="panel-head">
-                <h3>{selectedHistorySession.sessionDate} (Read Only)</h3>
-                <span>{selectedHistorySession.location || "No location"}</span>
-              </div>
-              <p className="helper-text">{selectedHistorySession.notes || "No notes for this session."}</p>
-              <div className="history-ends-readonly">
-                {selectedHistorySession.ends.map((end) => (
-                  <div key={end.endId} className="history-end-row">
-                    <span>End {end.endIndex}</span>
-                    <span>{end.distanceMeters}m</span>
-                    <span>{end.shots.map((shot) => shot.value).join(" ")}</span>
-                    <strong>{end.shots.reduce((sum, shot) => sum + shot.score, 0)}</strong>
-                    {end.photoWebViewLink ? (
-                      <a className="tiny-link" href={end.photoWebViewLink} target="_blank" rel="noreferrer">
-                        View Photo
-                      </a>
-                    ) : (
-                      <span className="tiny-link muted">No Photo</span>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </article>
-          ) : null}
-        </section>
-      ) : null}
-
-      {tab === "analytics" ? (
+      {viewMode === "analytics" ? (
         <section className="panel">
           <h2>Analytics</h2>
           <div className="stats-grid">
@@ -638,7 +1022,63 @@ export function AppShell() {
         </section>
       ) : null}
 
-      {tab === "account" ? (
+      {viewMode === "shop" ? (
+        <section className="panel">
+          <h2>Shop</h2>
+          <p className="affiliate-note">
+            As an Amazon Associate, I earn from qualifying purchases. I only share items I would personally recommend
+            to developing archers.
+          </p>
+          <div className="shop-groups">
+            {Array.from(shopByCategory.entries()).map(([category, products]) => (
+              <section key={category} className="shop-group">
+                <h3>{category}</h3>
+                <div className="shop-grid">
+                  {products.map((product) => (
+                    <article key={product.name} className="shop-card">
+                      {product.imageUrl ? (
+                        <Image
+                          className="shop-image"
+                          src={product.imageUrl}
+                          alt={product.name}
+                          width={240}
+                          height={160}
+                          loading="lazy"
+                          unoptimized
+                        />
+                      ) : null}
+                      <div className="shop-card-copy">
+                        <strong>{product.name}</strong>
+                        <p className="helper-text">
+                          <strong>Best for:</strong> {product.bestFor}
+                        </p>
+                        <p className="helper-text">{product.why}</p>
+                        {product.caution ? (
+                          <p className="helper-text">
+                            <strong>Note:</strong> {product.caution}
+                          </p>
+                        ) : null}
+                        <div className="shop-card-foot">
+                          <a
+                            className="button tiny primary"
+                            href={product.url}
+                            target="_blank"
+                            rel="nofollow sponsored noopener noreferrer"
+                          >
+                            Buy on Amazon
+                          </a>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </section>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {viewMode === "account" ? (
         <section className="panel">
           <h2>Account & Storage</h2>
           <p>

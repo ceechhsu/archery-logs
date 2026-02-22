@@ -15,11 +15,21 @@ const payloadSchema = z.object({
       locationLat: z.number().nullable().optional(),
       locationLng: z.number().nullable().optional(),
       notes: z.string(),
+      photos: z
+        .array(
+          z.object({
+            fileId: z.string(),
+            name: z.string(),
+            webViewLink: z.string().nullable().optional(),
+            uploadedAt: z.string()
+          })
+        )
+        .optional(),
       ends: z.array(
         z.object({
           endId: z.string(),
           endIndex: z.number(),
-          distanceMeters: z.number().min(1).max(300),
+          distanceMeters: z.number().min(1).max(300).nullable(),
           photoFileId: z.string().nullable().optional(),
           photoName: z.string().nullable().optional(),
           photoUploadedAt: z.string().nullable().optional(),

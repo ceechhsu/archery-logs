@@ -11,10 +11,10 @@ export async function GET(request: NextRequest) {
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
-  const expectedState = readOauthStateCookie();
+  const expectedState = await readOauthStateCookie();
 
   if (!code || !state || !expectedState || state !== expectedState) {
-    clearOauthStateCookie();
+    await clearOauthStateCookie();
     return NextResponse.redirect(new URL("/?authError=state_mismatch", request.url));
   }
 
@@ -28,11 +28,11 @@ export async function GET(request: NextRequest) {
       refreshToken: tokenResponse.refresh_token,
       expiresAt: Date.now() + tokenResponse.expires_in * 1000
     });
-    clearOauthStateCookie();
+    await clearOauthStateCookie();
 
     return NextResponse.redirect(new URL("/", request.url));
   } catch {
-    clearOauthStateCookie();
+    await clearOauthStateCookie();
     return NextResponse.redirect(new URL("/?authError=oauth_failed", request.url));
   }
 }
