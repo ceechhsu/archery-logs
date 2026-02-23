@@ -45,6 +45,20 @@ export interface AppMeta {
   lastSyncedAt?: string;
 }
 
+export interface UserProfile {
+  username: string;
+  firstName: string;
+  lastName: string;
+  startedArcheryOn: string;
+  profilePhotoDataUrl?: string;
+  handedness: "right" | "left" | "switch";
+  dominantEye: "right" | "left" | "both";
+  bowStyle: string;
+  homeRange: string;
+  trainingGoal: string;
+  updatedAt: string;
+}
+
 export interface SessionUser {
   sub: string;
   email: string;
@@ -59,6 +73,7 @@ export interface AuthSession {
 
 export interface QueueEntry {
   id: string;
+  ownerKey: string;
   createdAt: string;
   payload: Session[];
 }

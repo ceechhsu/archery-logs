@@ -6,13 +6,36 @@ import { bootstrapSheet, fetchSession, logout, pullSheet, pushSheet } from "@/li
 import { dateIsoInSf } from "@/lib/date-utils";
 import { enqueueWrite, listWrites, queuePayload, removeWrite } from "@/lib/indexed-queue";
 import { mergeSessionsLww } from "@/lib/session-merge";
-import { AppMeta, AuthSession, End, Session, Shot, SyncState } from "@/lib/types";
+import { AppMeta, AuthSession, End, Session, Shot, SyncState, UserProfile } from "@/lib/types";
 
 const LOCAL_SESSIONS_KEY = "archery_v2_local_sessions";
 const LOCAL_META_KEY = "archery_v2_local_meta";
+const LOCAL_PROFILE_KEY = "archery_v2_user_profile";
+
+const LEGACY_LOCAL_SESSIONS_KEY = "archery_v2_local_sessions";
+const LEGACY_LOCAL_META_KEY = "archery_v2_local_meta";
+const LEGACY_LOCAL_PROFILE_KEY = "archery_v2_user_profile";
 
 function todayIsoDate(): string {
   return dateIsoInSf();
+}
+
+function storageScope(session: AuthSession | null): string | null {
+  if (!session) return null;
+  const key = session.user.sub || session.user.email;
+  return key ? key.toLowerCase() : null;
+}
+
+function storageKey(baseKey: string, scope: string | null): string | null {
+  if (!scope) return null;
+  return `${baseKey}:${scope}`;
+}
+
+function clearLegacyStorageKeys(): void {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(LEGACY_LOCAL_SESSIONS_KEY);
+  localStorage.removeItem(LEGACY_LOCAL_META_KEY);
+  localStorage.removeItem(LEGACY_LOCAL_PROFILE_KEY);
 }
 
 function makeShot(index: number): Shot {
@@ -83,9 +106,10 @@ function normalizeSessions(input: Session[]): Session[] {
   }));
 }
 
-function loadLocalSessions(): Session[] {
+function loadLocalSessions(key: string | null): Session[] {
+  if (!key) return [];
   if (typeof window === "undefined") return [];
-  const raw = localStorage.getItem(LOCAL_SESSIONS_KEY);
+  const raw = localStorage.getItem(key);
   if (!raw) return [];
   try {
     return normalizeSessions(JSON.parse(raw) as Session[]);
@@ -94,14 +118,16 @@ function loadLocalSessions(): Session[] {
   }
 }
 
-function saveLocalSessions(sessions: Session[]) {
+function saveLocalSessions(key: string | null, sessions: Session[]) {
+  if (!key) return;
   if (typeof window === "undefined") return;
-  localStorage.setItem(LOCAL_SESSIONS_KEY, JSON.stringify(sessions));
+  localStorage.setItem(key, JSON.stringify(sessions));
 }
 
-function loadMeta(): AppMeta | null {
+function loadMeta(key: string | null): AppMeta | null {
+  if (!key) return null;
   if (typeof window === "undefined") return null;
-  const raw = localStorage.getItem(LOCAL_META_KEY);
+  const raw = localStorage.getItem(key);
   if (!raw) return null;
   try {
     return JSON.parse(raw) as AppMeta;
@@ -110,13 +136,57 @@ function loadMeta(): AppMeta | null {
   }
 }
 
-function saveMeta(meta: AppMeta | null): void {
+function saveMeta(key: string | null, meta: AppMeta | null): void {
+  if (!key) return;
   if (typeof window === "undefined") return;
   if (!meta) {
-    localStorage.removeItem(LOCAL_META_KEY);
+    localStorage.removeItem(key);
     return;
   }
-  localStorage.setItem(LOCAL_META_KEY, JSON.stringify(meta));
+  localStorage.setItem(key, JSON.stringify(meta));
+}
+
+function splitName(fullName: string | undefined): { firstName: string; lastName: string } {
+  const name = (fullName || "").trim();
+  if (!name) return { firstName: "", lastName: "" };
+  const parts = name.split(/\s+/);
+  if (parts.length === 1) return { firstName: parts[0], lastName: "" };
+  return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
+}
+
+function defaultUserProfile(session: AuthSession | null): UserProfile {
+  const name = splitName(session?.user?.name);
+  return {
+    username: session?.user?.email?.split("@")[0] || "",
+    firstName: name.firstName,
+    lastName: name.lastName,
+    startedArcheryOn: "",
+    profilePhotoDataUrl: session?.user?.picture || "",
+    handedness: "right",
+    dominantEye: "right",
+    bowStyle: "",
+    homeRange: "",
+    trainingGoal: "",
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function loadUserProfile(key: string | null): UserProfile | null {
+  if (!key) return null;
+  if (typeof window === "undefined") return null;
+  const raw = localStorage.getItem(key);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as UserProfile;
+  } catch {
+    return null;
+  }
+}
+
+function saveUserProfile(key: string | null, profile: UserProfile): void {
+  if (!key) return;
+  if (typeof window === "undefined") return;
+  localStorage.setItem(key, JSON.stringify(profile));
 }
 
 export function useArcheryApp() {
@@ -125,9 +195,14 @@ export function useArcheryApp() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [syncState, setSyncState] = useState<SyncState>("Not synced");
+  const [userProfile, setUserProfile] = useState<UserProfile>(defaultUserProfile(null));
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const sessionsRef = useRef<Session[]>([]);
+  const sessionsStorageKeyRef = useRef<string | null>(null);
+  const metaStorageKeyRef = useRef<string | null>(null);
+  const profileStorageKeyRef = useRef<string | null>(null);
+  const queueOwnerKeyRef = useRef<string | null>(null);
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.sessionId === activeSessionId) || null,
@@ -138,7 +213,7 @@ export function useArcheryApp() {
     const normalized = normalizeSessions(next);
     sessionsRef.current = normalized;
     setSessions(normalized);
-    saveLocalSessions(normalized);
+    saveLocalSessions(sessionsStorageKeyRef.current, normalized);
   }, []);
 
   const syncNow = useCallback(async (options?: { publishSessionId?: string }) => {
@@ -163,16 +238,26 @@ export function useArcheryApp() {
         return;
       }
 
+      const queueOwnerKey = queueOwnerKeyRef.current;
+      if (!queueOwnerKey) {
+        throw new Error("Session storage scope unavailable. Please sign in again.");
+      }
+
       const queueId = uuidv4();
-      await enqueueWrite({ id: queueId, createdAt: new Date().toISOString(), payload: queuePayload(syncTarget) });
-      const writes = await listWrites();
+      await enqueueWrite({
+        id: queueId,
+        ownerKey: queueOwnerKey,
+        createdAt: new Date().toISOString(),
+        payload: queuePayload(syncTarget)
+      });
+      const writes = await listWrites(queueOwnerKey);
       for (const write of writes) {
         const syncedAt = await pushSheet(meta.spreadsheetId, write.payload);
         await removeWrite(write.id);
         setMeta((current) => {
           if (!current) return current;
           const updated = { ...current, lastSyncedAt: syncedAt };
-          saveMeta(updated);
+          saveMeta(metaStorageKeyRef.current, updated);
           return updated;
         });
       }
@@ -189,8 +274,21 @@ export function useArcheryApp() {
       setIsLoading(true);
       try {
         const currentSession = await fetchSession();
+        const scope = storageScope(currentSession);
+        sessionsStorageKeyRef.current = storageKey(LOCAL_SESSIONS_KEY, scope);
+        metaStorageKeyRef.current = storageKey(LOCAL_META_KEY, scope);
+        profileStorageKeyRef.current = storageKey(LOCAL_PROFILE_KEY, scope);
+        queueOwnerKeyRef.current = scope;
+
         setAuthSession(currentSession);
-        const localSessions = loadLocalSessions();
+        clearLegacyStorageKeys();
+
+        const localProfile = loadUserProfile(profileStorageKeyRef.current);
+        const nextProfile = localProfile || defaultUserProfile(currentSession);
+        setUserProfile(nextProfile);
+        saveUserProfile(profileStorageKeyRef.current, nextProfile);
+
+        const localSessions = loadLocalSessions(sessionsStorageKeyRef.current);
         replaceSessions(localSessions);
         if (localSessions.length) {
           setActiveSessionId(localSessions[0].sessionId);
@@ -201,14 +299,14 @@ export function useArcheryApp() {
           return;
         }
 
-        const localMeta = loadMeta();
+        const localMeta = loadMeta(metaStorageKeyRef.current);
         if (localMeta) {
           setMeta(localMeta);
         }
 
         const bootMeta = await bootstrapSheet();
         setMeta(bootMeta);
-        saveMeta(bootMeta);
+        saveMeta(metaStorageKeyRef.current, bootMeta);
 
         const pulled = normalizeSessions(await pullSheet(bootMeta.spreadsheetId));
         const merged = mergeSessionsLww(localSessions, pulled);
@@ -252,7 +350,7 @@ export function useArcheryApp() {
           )
         );
         sessionsRef.current = nextSessions;
-        saveLocalSessions(nextSessions);
+        saveLocalSessions(sessionsStorageKeyRef.current, nextSessions);
         return nextSessions;
       });
 
@@ -291,7 +389,26 @@ export function useArcheryApp() {
     await logout();
     setAuthSession(null);
     setMeta(null);
-    saveMeta(null);
+    setSessions([]);
+    sessionsRef.current = [];
+    setActiveSessionId(null);
+    setUserProfile(defaultUserProfile(null));
+    saveMeta(metaStorageKeyRef.current, null);
+    sessionsStorageKeyRef.current = null;
+    metaStorageKeyRef.current = null;
+    profileStorageKeyRef.current = null;
+    queueOwnerKeyRef.current = null;
+  }, []);
+
+  const updateUserProfile = useCallback((updater: (profile: UserProfile) => UserProfile) => {
+    setUserProfile((previous) => {
+      const next = {
+        ...updater(previous),
+        updatedAt: new Date().toISOString()
+      };
+      saveUserProfile(profileStorageKeyRef.current, next);
+      return next;
+    });
   }, []);
 
   return {
@@ -304,7 +421,9 @@ export function useArcheryApp() {
     syncState,
     errorMessage,
     isLoading,
+    userProfile,
     updateSession,
+    updateUserProfile,
     addSession,
     deleteSession,
     syncNow,

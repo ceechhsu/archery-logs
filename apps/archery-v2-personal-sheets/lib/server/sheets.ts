@@ -1,6 +1,6 @@
 import { Session } from "@/lib/types";
 
-const SHEET_TITLE = "Archery With Ceech Log";
+const SHEET_TITLE = "ArrowLog";
 const APP_PROPERTY_KEY = "archery_app";
 const APP_PROPERTY_VALUE = "v2_personal_sheets";
 

@@ -2,7 +2,7 @@ import type { Viewport } from "next";
 import "./globals.css";
 
 export const metadata = {
-  title: "Archery With Ceech",
+  title: "ArrowLog",
   description: "Track archery sessions with your own Google Sheet as source of truth"
 };
 

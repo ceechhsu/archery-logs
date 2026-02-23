@@ -5,9 +5,9 @@ import Image from "next/image";
 import { dateIsoInSf, sfMonthLabel } from "@/lib/date-utils";
 import { lifetimeStats, sessionArrows, sessionAvgPerArrow, sessionTotal } from "@/lib/metrics";
 import { ShotWheelPicker } from "@/components/shot-wheel-picker";
-import { End, Session } from "@/lib/types";
+import { End, Session, UserProfile } from "@/lib/types";
 import { useArcheryApp } from "@/lib/use-archery-app";
-import { reverseGeocode, uploadEndPhoto } from "@/lib/client-api";
+import { reverseGeocode, uploadEndPhoto, type UploadProgress } from "@/lib/client-api";
 import { shopProducts } from "@/lib/shop-products";
 
 type Tab = "editor" | "shop" | "analytics" | "account";
@@ -83,6 +83,12 @@ function driveThumbUrl(fileId: string): string {
   return `/api/photos/file?fileId=${encodeURIComponent(fileId)}`;
 }
 
+function uploadProgressLabel(progress: UploadProgress | null): string {
+  if (!progress || progress.phase === "optimizing") return "Optimizing...";
+  if (typeof progress.percent === "number") return `Uploading ${progress.percent}%...`;
+  return "Uploading...";
+}
+
 export function AppShell() {
   const {
     authSession,
@@ -93,7 +99,9 @@ export function AppShell() {
     setActiveSessionId,
     errorMessage,
     isLoading,
+    userProfile,
     updateSession,
+    updateUserProfile,
     addSession,
     deleteSession,
     syncNow,
@@ -102,9 +110,13 @@ export function AppShell() {
 
   const [viewMode, setViewMode] = useState<ViewMode>("dashboard");
   const [uploadingEndId, setUploadingEndId] = useState<string | null>(null);
+  const [uploadingEndProgress, setUploadingEndProgress] = useState<UploadProgress | null>(null);
   const [isUploadingSessionPhoto, setIsUploadingSessionPhoto] = useState(false);
+  const [sessionPhotoProgress, setSessionPhotoProgress] = useState<UploadProgress | null>(null);
   const [isLocating, setIsLocating] = useState(false);
   const [locationNotice, setLocationNotice] = useState<{ type: "info" | "warn" | "error"; text: string } | null>(null);
+  const [profileNotice, setProfileNotice] = useState<{ type: "info" | "error"; text: string } | null>(null);
+  const [profileDraft, setProfileDraft] = useState<UserProfile>(userProfile);
   const [sessionDistanceDraft, setSessionDistanceDraft] = useState("");
   const [distanceReminder, setDistanceReminder] = useState(false);
   const [selectedCalendarDate, setSelectedCalendarDate] = useState<string | null>(null);
@@ -155,6 +167,11 @@ export function AppShell() {
     }
     return totals;
   }, [activeSession]);
+  const welcomeLabel = useMemo(() => {
+    const first = userProfile.firstName.trim();
+    if (first) return first;
+    return authSession?.user.email || "Archer";
+  }, [authSession?.user.email, userProfile.firstName]);
   const calendarModel = useMemo(() => {
     const y = calendarMonth.year;
     const m = calendarMonth.month;
@@ -235,11 +252,18 @@ export function AppShell() {
     }
   }, [sessionHasDistance]);
 
+  useEffect(() => {
+    setProfileDraft(userProfile);
+  }, [userProfile]);
+
   async function handlePhotoUpload(endId: string, file: File) {
     if (!meta || !activeSession) return;
     setUploadingEndId(endId);
+    setUploadingEndProgress({ phase: "optimizing", percent: null });
     try {
-      const uploaded = await uploadEndPhoto(meta.spreadsheetId, endId, file);
+      const uploaded = await uploadEndPhoto(meta.spreadsheetId, endId, file, {
+        onProgress: setUploadingEndProgress
+      });
       updateSession((session) => ({
         ...session,
         ends: session.ends.map((end) =>
@@ -258,14 +282,18 @@ export function AppShell() {
       console.error(error instanceof Error ? error.message : "Photo upload failed");
     } finally {
       setUploadingEndId(null);
+      setUploadingEndProgress(null);
     }
   }
 
   async function handleSessionPhotoUpload(file: File) {
     if (!meta || !activeSession) return;
     setIsUploadingSessionPhoto(true);
+    setSessionPhotoProgress({ phase: "optimizing", percent: null });
     try {
-      const uploaded = await uploadEndPhoto(meta.spreadsheetId, activeSession.sessionId, file);
+      const uploaded = await uploadEndPhoto(meta.spreadsheetId, activeSession.sessionId, file, {
+        onProgress: setSessionPhotoProgress
+      });
       const uploadedAt = new Date().toISOString();
       updateSession((session) => ({
         ...session,
@@ -283,6 +311,7 @@ export function AppShell() {
       console.error(error instanceof Error ? error.message : "Session photo upload failed");
     } finally {
       setIsUploadingSessionPhoto(false);
+      setSessionPhotoProgress(null);
     }
   }
 
@@ -344,6 +373,42 @@ export function AppShell() {
     );
   }
 
+  async function handleProfilePhotoChange(file: File) {
+    if (!file.type.startsWith("image/")) {
+      setProfileNotice({ type: "error", text: "Please choose an image file for your profile photo." });
+      return;
+    }
+    if (file.size > 1_500_000) {
+      setProfileNotice({ type: "error", text: "Please choose a photo smaller than 1.5MB." });
+      return;
+    }
+
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(new Error("Could not read image file"));
+      reader.readAsDataURL(file);
+    });
+
+    setProfileDraft((current) => ({ ...current, profilePhotoDataUrl: dataUrl }));
+    setProfileNotice({ type: "info", text: "Profile photo updated." });
+  }
+
+  function handleSaveProfile() {
+    const normalizedDraft: UserProfile = {
+      ...profileDraft,
+      username: profileDraft.username.trim(),
+      firstName: profileDraft.firstName.trim(),
+      lastName: profileDraft.lastName.trim(),
+      bowStyle: profileDraft.bowStyle.trim(),
+      homeRange: profileDraft.homeRange.trim(),
+      trainingGoal: profileDraft.trainingGoal.trim()
+    };
+    updateUserProfile(() => normalizedDraft);
+    setProfileNotice({ type: "info", text: "Profile saved." });
+    setViewMode("dashboard");
+  }
+
   async function handleSaveAndSync() {
     await syncNow(activeSession?.isLocalOnly ? { publishSessionId: activeSession.sessionId } : undefined);
     setViewMode("dashboard");
@@ -377,7 +442,7 @@ export function AppShell() {
       <main className="page-wrap">
         <section className="hero-card hero-split">
           <div className="hero-copy">
-            <span className="eyebrow">Archery With Ceech</span>
+            <span className="eyebrow">ArrowLog</span>
             <h1>Train any day. Own every session.</h1>
             <p>
               Sign in with Google, grant read/write access to your spreadsheet, and keep your archery history
@@ -404,9 +469,19 @@ export function AppShell() {
           <button className="eyebrow-link" onClick={() => leaveEditorIfUnsavedDraft("dashboard")}>Personal Sheets Edition</button>
           <h1>
             <button className="title-link" onClick={() => leaveEditorIfUnsavedDraft("dashboard")}>
-              Archery With Ceech
+              ArrowLog
             </button>
           </h1>
+          <p className="welcome-row">
+            Welcome{" "}
+            <button
+              className="welcome-link"
+              onClick={() => leaveEditorIfUnsavedDraft("account")}
+              title={`Open account for ${authSession.user.email}`}
+            >
+              {welcomeLabel}
+            </button>
+          </p>
         </div>
         <div className="topbar-actions">
           <button className="button" onClick={() => void signOut()}>
@@ -772,7 +847,7 @@ export function AppShell() {
                   <path d="M7 6h3l1.4-2h5.2L18 6h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3Zm5 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10Zm0-2.2a2.8 2.8 0 1 1 0-5.6 2.8 2.8 0 0 1 0 5.6Z" />
                 </svg>
               </label>
-              {isUploadingSessionPhoto ? <span className="tiny-link">Uploading...</span> : null}
+              {isUploadingSessionPhoto ? <span className="tiny-link">{uploadProgressLabel(sessionPhotoProgress)}</span> : null}
             </div>
             <div className="session-photos-grid">
               {(activeSession.photos || []).length ? (
@@ -956,7 +1031,9 @@ export function AppShell() {
                           <path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm1 7h2v8h-2v-8Zm4 0h2v8h-2v-8ZM8 10h2v8H8v-8Z" />
                         </svg>
                       </button>
-                      {uploadingEndId === end.endId ? <span className="tiny-link">Uploading...</span> : null}
+                      {uploadingEndId === end.endId ? (
+                        <span className="tiny-link">{uploadProgressLabel(uploadingEndProgress)}</span>
+                      ) : null}
                     </div>
                   </article>
                 );
@@ -1080,10 +1157,171 @@ export function AppShell() {
 
       {viewMode === "account" ? (
         <section className="panel">
-          <h2>Account & Storage</h2>
+          <h2>Account & Profile</h2>
           <p>
             Signed in as <strong>{authSession.user.email}</strong>
           </p>
+          <div className="profile-layout">
+            <section className="profile-photo-card">
+              <div className="profile-photo-wrap">
+                {profileDraft.profilePhotoDataUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={profileDraft.profilePhotoDataUrl} alt="Profile" className="profile-photo" />
+                ) : (
+                  <div className="profile-photo-fallback" aria-hidden="true">
+                    {(profileDraft.firstName[0] || authSession.user.name[0] || "U").toUpperCase()}
+                  </div>
+                )}
+              </div>
+              <div className="profile-photo-actions">
+                <input
+                  id="profile-photo-upload"
+                  className="sr-only"
+                  type="file"
+                  accept="image/*"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (!file) return;
+                    void handleProfilePhotoChange(file).catch((error) => {
+                      setProfileNotice({
+                        type: "error",
+                        text: error instanceof Error ? error.message : "Unable to update profile photo"
+                      });
+                    });
+                    event.currentTarget.value = "";
+                  }}
+                />
+                <label className="button" htmlFor="profile-photo-upload">Upload Photo</label>
+                <button
+                  className="button"
+                  onClick={() => {
+                    setProfileDraft((profile) => ({ ...profile, profilePhotoDataUrl: "" }));
+                    setProfileNotice({ type: "info", text: "Profile photo removed." });
+                  }}
+                >
+                  Remove
+                </button>
+              </div>
+              {profileNotice ? (
+                <p className={`profile-notice ${profileNotice.type}`}>{profileNotice.text}</p>
+              ) : null}
+            </section>
+
+            <section className="profile-form-grid">
+              <label className="field-label compact">
+                Username
+                <input
+                  type="text"
+                  value={profileDraft.username}
+                  onChange={(event) =>
+                    setProfileDraft((profile) => ({ ...profile, username: event.target.value.trimStart() }))
+                  }
+                  placeholder="ceech-archer"
+                />
+              </label>
+              <label className="field-label compact">
+                First Name
+                <input
+                  type="text"
+                  value={profileDraft.firstName}
+                  onChange={(event) =>
+                    setProfileDraft((profile) => ({ ...profile, firstName: event.target.value.trimStart() }))
+                  }
+                  placeholder="Ceech"
+                />
+              </label>
+              <label className="field-label compact">
+                Last Name
+                <input
+                  type="text"
+                  value={profileDraft.lastName}
+                  onChange={(event) =>
+                    setProfileDraft((profile) => ({ ...profile, lastName: event.target.value.trimStart() }))
+                  }
+                  placeholder="Hsueh"
+                />
+              </label>
+              <label className="field-label compact">
+                Started Archery
+                <input
+                  type="date"
+                  value={profileDraft.startedArcheryOn}
+                  onChange={(event) =>
+                    setProfileDraft((profile) => ({ ...profile, startedArcheryOn: event.target.value }))
+                  }
+                />
+              </label>
+              <label className="field-label compact">
+                Handedness
+                <select
+                  value={profileDraft.handedness}
+                  onChange={(event) =>
+                    setProfileDraft((profile) => ({
+                      ...profile,
+                      handedness: event.target.value as "right" | "left" | "switch"
+                    }))
+                  }
+                >
+                  <option value="right">Right-handed</option>
+                  <option value="left">Left-handed</option>
+                  <option value="switch">Switch</option>
+                </select>
+              </label>
+              <label className="field-label compact">
+                Dominant Eye
+                <select
+                  value={profileDraft.dominantEye}
+                  onChange={(event) =>
+                    setProfileDraft((profile) => ({
+                      ...profile,
+                      dominantEye: event.target.value as "right" | "left" | "both"
+                    }))
+                  }
+                >
+                  <option value="right">Right eye</option>
+                  <option value="left">Left eye</option>
+                  <option value="both">Both</option>
+                </select>
+              </label>
+              <label className="field-label compact">
+                Bow Style
+                <input
+                  type="text"
+                  value={profileDraft.bowStyle}
+                  onChange={(event) =>
+                    setProfileDraft((profile) => ({ ...profile, bowStyle: event.target.value.trimStart() }))
+                  }
+                  placeholder="Olympic recurve"
+                />
+              </label>
+              <label className="field-label compact">
+                Home Range / Club
+                <input
+                  type="text"
+                  value={profileDraft.homeRange}
+                  onChange={(event) =>
+                    setProfileDraft((profile) => ({ ...profile, homeRange: event.target.value.trimStart() }))
+                  }
+                  placeholder="Golden Gate Park Archers"
+                />
+              </label>
+              <label className="field-label compact full">
+                Training Goal
+                <textarea
+                  value={profileDraft.trainingGoal}
+                  onChange={(event) =>
+                    setProfileDraft((profile) => ({ ...profile, trainingGoal: event.target.value }))
+                  }
+                  placeholder="Example: Hold 8.5+ avg at 70m by end of season"
+                />
+              </label>
+              <div className="profile-save-row">
+                <button className="button primary" onClick={handleSaveProfile}>Save</button>
+              </div>
+            </section>
+          </div>
+
+          <h3>Storage</h3>
           <p>
             Linked Sheet: <strong>{meta?.spreadsheetTitle || "Not linked"}</strong>
           </p>
@@ -1133,7 +1371,7 @@ export function AppShell() {
           </div>
           <p className="privacy-note">
             Privacy default: this app does not keep a centralized log database. Your practice data lives in your
-            personal Google Sheet.
+            personal Google Sheet. Profile settings are stored in this browser for now.
           </p>
         </section>
       ) : null}

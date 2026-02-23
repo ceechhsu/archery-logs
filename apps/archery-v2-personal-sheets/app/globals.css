@@ -212,6 +212,25 @@ body {
   align-items: center;
 }
 
+.welcome-row {
+  margin: 0.2rem 0 0;
+  color: var(--ink-1);
+  font-size: 0.9rem;
+}
+
+.welcome-link {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 0.18rem;
+}
+
 .sync-pill {
   border-radius: 999px;
   padding: 0.25rem 0.65rem;
@@ -477,6 +496,94 @@ body {
   font-weight: 600;
 }
 
+.field-label.compact {
+  margin: 0;
+}
+
+.field-label.compact.full {
+  grid-column: 1 / -1;
+}
+
+.profile-layout {
+  margin: 0.8rem 0 1rem;
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+
+.profile-photo-card {
+  border: 1px solid var(--line);
+  border-radius: 0.85rem;
+  background: #fffdf9;
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.profile-photo-wrap {
+  display: grid;
+  place-items: center;
+}
+
+.profile-photo,
+.profile-photo-fallback {
+  width: 132px;
+  height: 132px;
+  border-radius: 999px;
+  border: 1px solid #dfcfba;
+}
+
+.profile-photo {
+  object-fit: cover;
+  background: #f7efe3;
+}
+
+.profile-photo-fallback {
+  display: grid;
+  place-items: center;
+  font-family: "Fraunces", serif;
+  font-size: 2.1rem;
+  color: var(--accent);
+  background: radial-gradient(circle at 26% 20%, #fff3de 0%, #f4e4ce 70%);
+}
+
+.profile-photo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.profile-notice {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.profile-notice.info {
+  color: var(--ok);
+}
+
+.profile-notice.error {
+  color: var(--error);
+}
+
+.profile-form-grid {
+  border: 1px solid var(--line);
+  border-radius: 0.85rem;
+  background: #fffdf9;
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.profile-save-row {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+}
+
 .location-row {
   display: grid;
   grid-template-columns: 1fr auto auto;
@@ -509,7 +616,9 @@ body {
 
 textarea,
 input[type="date"],
-input[type="number"] {
+input[type="number"],
+input[type="text"],
+select {
   font: inherit;
   border: 1px solid var(--line);
   border-radius: 0.75rem;
@@ -1235,6 +1344,14 @@ code {
   }
 
   .location-row {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-form-grid {
     grid-template-columns: 1fr;
   }
 

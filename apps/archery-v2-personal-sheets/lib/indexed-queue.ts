@@ -32,13 +32,17 @@ export async function enqueueWrite(entry: QueueEntry): Promise<void> {
   });
 }
 
-export async function listWrites(): Promise<QueueEntry[]> {
+export async function listWrites(ownerKey: string): Promise<QueueEntry[]> {
   const store = await getStore("readonly");
   return new Promise((resolve, reject) => {
     const req = store.getAll();
     req.onsuccess = () => {
       const result = (req.result || []) as QueueEntry[];
-      resolve(result.sort((a, b) => a.createdAt.localeCompare(b.createdAt)));
+      resolve(
+        result
+          .filter((entry) => entry.ownerKey === ownerKey)
+          .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      );
     };
     req.onerror = () => reject(req.error);
   });
